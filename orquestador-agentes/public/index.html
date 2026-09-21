@@ -32,7 +32,10 @@
 
     <div class="rail-head">
       <span class="eyebrow">PROYECTOS</span>
-      <button class="link-btn" id="addProjectBtn">+ carpeta</button>
+      <span class="rail-actions">
+        <button class="link-btn" id="addProjectBtn">+ carpeta</button>
+        <button class="link-btn" id="cloneProjectBtn" title="Clonar un repositorio dentro de una carpeta tuya">+ clonar</button>
+      </span>
     </div>
     <div class="project-list" id="projectList"></div>
 
@@ -102,6 +105,7 @@
         <button class="btn" id="edNewFileBtn" title="Archivo nuevo en la carpeta seleccionada">+ Archivo</button>
         <button class="btn" id="edNewDirBtn" title="Carpeta nueva dentro de la seleccionada">+ Carpeta</button>
         <button class="btn" id="edNewProjectBtn" title="Crear una carpeta nueva y abrirla como proyecto">+ Proyecto</button>
+        <button class="btn" id="edCloneBtn" title="Clonar un repositorio y abrirlo como proyecto">+ Clonar</button>
         <button class="btn" id="edReloadBtn" title="Releer la carpeta">Releer</button>
         <button class="btn primary" id="edSaveBtn">Guardar ⌘S</button>
       </div>
@@ -361,7 +365,8 @@
 
 <script src="/vendor/xterm/xterm.js"></script>
 <script src="/vendor/xterm/addon-fit.js"></script>
-<script src="app.js"></script>
+<script src="branchcolor.js"></script>
+  <script src="app.js"></script>
 <script src="graph.js"></script>
 <script src="editor.js"></script>
 </body>

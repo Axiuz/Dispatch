@@ -53,6 +53,21 @@
   --red-line: rgba(255, 111, 94, 0.4);
   --violet: #a89bff;
 
+  /* Color por rama de git: la tarjeta de Control de código se tiñe con el de la
+     rama en la que estás. main y master siempre el oro; el resto se reparte por
+     el hash del nombre entre los cuatro secundarios. */
+  --violet-soft: rgba(168, 155, 255, 0.16);
+  --branch-main: var(--accent);
+  --branch-main-soft: var(--accent-soft);
+  --branch-1: var(--green);
+  --branch-1-soft: var(--green-soft);
+  --branch-2: var(--violet);
+  --branch-2-soft: var(--violet-soft);
+  --branch-3: var(--teal);
+  --branch-3-soft: var(--teal-soft);
+  --branch-4: var(--amber);
+  --branch-4-soft: var(--amber-soft);
+
   --syn-comment: #8c9a86;
   --syn-string: #f0b86e;
   --syn-number: #7fe0c4;
@@ -252,6 +267,8 @@ body.resizing-x * { cursor: col-resize !important; }
   font-size: 11.5px; color: var(--faint);
 }
 .link-btn:hover { color: var(--accent); }
+.link-btn:disabled { color: var(--faint); cursor: default; }
+.rail-actions { display: flex; gap: 10px; align-items: baseline; }
 .link-btn.tiny { font-size: 10px; }
 
 /* ---------- Proyectos ---------- */
@@ -590,10 +607,32 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 }
 .git-card .field-label { margin: 0; font-size: 9.5px; }
 .git-branch {
-  font-size: 11px; color: var(--accent); display: flex; align-items: center; gap: 5px; min-width: 0;
+  font-size: 11px; color: var(--branch, var(--accent)); display: flex; align-items: center; gap: 5px; min-width: 0;
   background: none; border: 0; border-radius: 5px; padding: 2px 4px; cursor: pointer; font-family: var(--mono);
 }
 .git-branch:hover { background: var(--panel-2); }
+.git-branch .git-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Fila de rama: el punto y el nombre llevan el color de la rama, y debajo van
+   las ramas recientes para saltar sin abrir el menú. */
+.git-branch-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.git-branch-row .git-branch { flex: 1; font-size: 12px; }
+.git-branch-dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--branch, var(--accent)); box-shadow: 0 0 0 2px var(--branch-soft, var(--accent-soft));
+}
+.git-branch-row.detached .git-branch-dot { background: var(--ghost); box-shadow: none; }
+.git-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: -5px; }
+.git-chip {
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  background: var(--sunken); border: 1px solid var(--border-soft);
+  border-radius: 999px; padding: 1px 7px; cursor: pointer; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.git-chip:hover { color: var(--text-2); border-color: var(--border-strong); background: var(--panel-2); }
+.git-chip.back { color: var(--branch-back, var(--muted)); }
+.git-on-branch { font-family: var(--mono); font-weight: 400; color: var(--faint); }
+.git-on-branch b { color: var(--branch, var(--accent)); font-weight: 400; }
 .git-caret { color: var(--muted); font-size: 10px; }
 .git-sync {
   flex: none; background: none; border: 0; color: var(--muted); cursor: pointer;
@@ -707,19 +746,27 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   flex: none; width: 7px; height: 7px; margin-top: 4px; border-radius: 50%;
   background: var(--bg); border: 1.5px solid var(--ghost); position: relative; z-index: 1;
 }
-.git-commit.unpushed .git-dot { border-color: var(--accent); background: var(--accent-soft); }
+.git-commit.unpushed .git-dot { border-color: var(--branch, var(--accent)); background: var(--branch, var(--accent)); }
+
+/* La frontera entre lo que solo está en tu máquina y lo que ya está en el
+   remoto: encima de la línea, los commits sin subir. */
+.git-remote-line {
+  display: flex; align-items: center; gap: 6px; padding: 3px 0 3px 1px;
+  font-family: var(--mono); font-size: 9.5px; color: var(--faint);
+}
+.git-remote-line::after { content: ""; flex: 1; border-top: 1px dashed var(--border-dashed); }
 .git-commit-body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .git-subject {
   font-size: 11.5px; color: var(--text-2); line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .git-branch-chip {
-  font-size: 9.5px; font-family: var(--mono); color: var(--accent);
-  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  font-size: 9.5px; font-family: var(--mono); color: var(--branch, var(--accent));
+  background: var(--branch-soft, var(--accent-soft)); border: 1px solid var(--branch, var(--accent));
   border-radius: 4px; padding: 0 4px; margin-right: 5px;
 }
 .git-meta { display: flex; gap: 7px; font-size: 10px; color: var(--faint); flex-wrap: wrap; }
-.git-tag { color: var(--accent); }
+.git-tag { color: var(--branch, var(--accent)); }
 .git-more { font-size: 10.5px; color: var(--faint); padding: 2px 5px; }
 
 /* ---------- Menú flotante (ramas y opciones de commit) ---------- */

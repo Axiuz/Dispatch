@@ -221,6 +221,7 @@ function renderStepCard(step) {
   const meta = [];
   if (column === "progress") meta.push(step.agent ? "escribiendo…" : "en curso");
   if (step.durationMs) meta.push(formatSeconds(step.durationMs));
+  if (step.manual && step.deliveredColumn && step.deliveredColumn === column) meta.push("enviada a Claude");
   if (step.error && !step.note) meta.push("error");
   if (step.note) meta.push(step.note);
 
@@ -582,8 +583,65 @@ window.onFolderPicked = async (folder) => {
   }
 };
 
+function defaultCloneName(url) {
+  const clean = String(url || "").trim().replace(/[?#].*$/, "").replace(/\/+$/, "");
+  const last = clean.split(/[/:]/).filter(Boolean).pop() || "";
+  return last.replace(/\.git$/i, "");
+}
+
+function cloneButtons() {
+  return [$("#cloneProjectBtn"), document.querySelector("#edCloneBtn")].filter(Boolean);
+}
+
+// Pide la URL, la carpeta donde clonar y el nombre de la carpeta nueva.
+// El botón se deshabilita y muestra "clonando…" mientras corre: es la única operación del panel
+// que puede tardar minutos y no manda progreso por SSE.
+// Si sale bien, el proyecto entra en la lista y se abre; si falla, se enseña lo que dijo git.
+async function cloneRepo(onDone = null) {
+  const url = prompt("URL del repositorio que quieres clonar:\n\nhttps://github.com/usuario/repo.git\ngit@github.com:usuario/repo.git");
+  if (!url || !url.trim()) return;
+
+  pickFolder(async (parent) => {
+    if (!parent) return;
+    const name = prompt(`Nombre de la carpeta\n\nSe clona dentro de ${tildePath(parent)}`, defaultCloneName(url));
+    if (!name || !name.trim()) return;
+
+    const buttons = cloneButtons();
+    const labels = buttons.map((b) => b.textContent);
+    buttons.forEach((b) => {
+      b.disabled = true;
+      b.textContent = "clonando…";
+    });
+
+    try {
+      const data = await api("/api/git/clone", { parent, url: url.trim(), name: name.trim() });
+      if (!data.ok) {
+        alert(data.output || "El clone no se pudo completar");
+        return;
+      }
+      const project = data.project;
+      const idx = projects.findIndex((p) => p.path === project.path);
+      if (idx >= 0) projects[idx] = project;
+      else projects.unshift(project);
+      renderProjects();
+      if (onDone) await onDone(project);
+      else openProject(project);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      buttons.forEach((b, i) => {
+        b.disabled = false;
+        b.textContent = labels[i];
+      });
+    }
+  });
+}
+
+window.cloneRepo = cloneRepo;
+
 $("#addProjectBtn").addEventListener("click", () => pickFolder());
 $("#sessionPickBtn").addEventListener("click", () => pickFolder());
+$("#cloneProjectBtn").addEventListener("click", () => cloneRepo());
 
 // ---- Dock de la terminal: plegar y estirar ----
 // Sin botones en la cabecera: la cabecera entera es el interruptor de plegado y
@@ -1355,6 +1413,43 @@ const gitDir = () => dockCwd || projects.find((p) => p.exists)?.path || null;
 // volver no debe perder lo que llevabas escrito.
 const draftKey = (root) => `orq.commitMsg.${root}`;
 
+// Genera la clave de almacenamiento de las ramas recientes, una por raíz de repositorio,
+// igual que el borrador del mensaje de commit: cambiar de proyecto y volver debe encontrar
+// las tuyas, y son de quien mira el panel, no del repositorio.
+const recentKey = (root) => `orq.recentBranches.${root}`;
+
+// Lee las ramas recientes guardadas en localStorage para un repositorio dado.
+// Devuelve un array de strings, filtrado para evitar valores no válidos.
+// Si el JSON está roto devuelve un array vacío en lugar de lanzar excepción.
+function readRecent(root) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(recentKey(root)) || "[]");
+    return Array.isArray(raw) ? raw.filter((b) => typeof b === "string") : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+// Apunta la rama actual al frente de las recientes de ese repositorio.
+// Se llama en cada lectura del repositorio y no solo al cambiar de rama desde el panel:
+// así también se entera de los cambios hechos en la terminal o por Claude Code.
+function rememberCurrentBranch(info) {
+  if (!info || !info.repo || info.detached || !info.branch) return;
+  const list = BranchColor.rememberBranch(readRecent(info.root), info.branch);
+  try {
+    localStorage.setItem(recentKey(info.root), JSON.stringify(list));
+  } catch (_) {}
+}
+
+// Devuelve las ramas recientes distintas de la actual, que son las que se enseñan
+// como chips. Con HEAD suelto no hay rama anterior a la que volver, así que va vacía.
+function recentBranches(info, limit = 3) {
+  if (!info || info.detached) return [];
+  return readRecent(info.root)
+    .filter((b) => b !== info.branch)
+    .slice(0, limit);
+}
+
 function readDraft(root) {
   try {
     return localStorage.getItem(draftKey(root)) || "";
@@ -1389,7 +1484,10 @@ async function loadGit({ refresh = false, force = false } = {}) {
     const q = `path=${encodeURIComponent(dir)}${refresh ? "&refresh=1" : ""}`;
     const data = await api(`/api/git?${q}`);
     // La carpeta pudo cambiar mientras respondía: se descarta lo que ya no toca
-    if (data.path === gitDir()) gitInfo = data;
+    if (data.path === gitDir()) {
+      gitInfo = data;
+      rememberCurrentBranch(data);
+    }
   } catch (_) {
     gitInfo = null;
   } finally {
@@ -1491,6 +1589,8 @@ function renderGit() {
   const card = $("#gitCard");
   // Mientras corre una operación la tarjeta se apaga y no acepta clics
   card.classList.toggle("busy", gitBusy);
+  card.style.removeProperty("--branch");
+  card.style.removeProperty("--branch-soft");
   const head = (right = "") => `
     <div class="row baseline between">
       <span class="field-label">CONTROL DE CÓDIGO</span>
@@ -1537,6 +1637,10 @@ function renderGit() {
   const staged = files.filter((f) => f.staged);
   const changed = files.filter((f) => !f.staged);
   const branch = gitInfo.detached ? "HEAD suelto" : gitInfo.branch || "sin rama";
+  const branchVar = gitInfo.detached ? null : BranchColor.branchColorVar(gitInfo.branch);
+  card.style.setProperty("--branch", branchVar ? `var(${branchVar})` : "var(--ghost)");
+  card.style.setProperty("--branch-soft", branchVar ? `var(${branchVar}-soft)` : "transparent");
+  const onBranch = gitInfo.detached ? "" : ` <span class="git-on-branch">· <b>${escapeHtml(branch)}</b></span>`;
   const arrows = [
     gitInfo.ahead ? `<span class="git-ahead" title="${gitInfo.ahead} commits sin subir">↑${gitInfo.ahead}</span>` : "",
     gitInfo.behind ? `<span class="git-behind" title="${gitInfo.behind} commits sin traer">↓${gitInfo.behind}</span>` : "",
@@ -1553,12 +1657,13 @@ function renderGit() {
     </div>`;
 
   const group = (title, list, action) => {
+    const label = `${title}${onBranch}`;
     if (!list.length) return "";
     const shown = list.slice(0, MAX_GIT_FILES).map(fileRow).join("");
     return `
       <div class="git-section">
         <div class="git-section-head">
-          <span>${title}</span>
+          <span>${label}</span>
           <span class="row gap6 baseline">
             <button class="link-btn tiny" data-git-${action}-all>${action === "stage" ? "preparar todo" : "quitar todo"}</button>
             <span class="mono muted small">${list.length}</span>
@@ -1569,10 +1674,19 @@ function renderGit() {
       </div>`;
   };
 
-  const commitRows = commits
-    .slice(0, MAX_GIT_COMMITS)
+  // La línea con el nombre del upstream cae entre el último commit que solo está en tu
+  // máquina y el primero que ya está subido: encima lo tuyo, debajo lo que ya viajó al
+  // remoto. Si todos son locales o todos están subidos, no se dibuja.
+  const shownCommits = commits.slice(0, MAX_GIT_COMMITS);
+  const firstPushed = shownCommits.findIndex((c) => !c.unpushed);
+  const remoteLine = gitInfo.upstream && firstPushed > 0
+    ? `<div class="git-remote-line">${escapeHtml(gitInfo.upstream)}</div>`
+    : "";
+
+  const commitRows = shownCommits
     .map(
       (c, i) => `
+      ${i === firstPushed ? remoteLine : ""}
       <div class="git-commit ${c.unpushed ? "unpushed" : ""}">
         <span class="git-dot" aria-hidden="true"></span>
         <div class="git-commit-body">
@@ -1658,19 +1772,34 @@ function renderGit() {
 
   const primary = gitPrimaryAction();
 
-  const branchBtn = `
-    <span class="row gap6 baseline">
-      <button class="git-branch mono" data-git-branches title="Cambiar de rama">${escapeHtml(branch)}${arrows}<span class="git-caret">⌄</span></button>
+  // Los chips de las ramas recientes: el primero es la rama anterior y lleva el símbolo
+  // de volver, para que ir y regresar entre dos ramas cueste un clic y sin abrir el menú.
+  // Cada chip lleva su propio color en --branch-back, que es de donde lo lee el CSS.
+  const recent = recentBranches(gitInfo);
+  const chips = recent
+    .map(
+      (b, i) => `<button class="git-chip${i === 0 ? " back" : ""}" style="--branch-back: var(${BranchColor.branchColorVar(b)})" data-git-switch="${escapeAttr(b)}" title="Cambiar a ${escapeAttr(b)}">${i === 0 ? "↺ " : ""}${escapeHtml(b)}</button>`
+    )
+    .join("");
+
+  const branchRow = `
+    <div class="git-branch-row${gitInfo.detached ? " detached" : ""}">
+      <span class="git-branch-dot" aria-hidden="true"></span>
+      <button class="git-branch mono" data-git-branches title="Cambiar de rama">
+        <span class="git-name-text">${escapeHtml(branch)}</span>${arrows}<span class="git-caret">⌄</span>
+      </button>
       <button class="git-sync" data-git-sync title="Traer y subir (sync)">⟳</button>
-    </span>`;
+    </div>
+    ${chips ? `<div class="git-chips">${chips}</div>` : ""}`;
 
   card.innerHTML =
-    head(branchBtn) +
+    head() +
+    branchRow +
     `
     ${remoteSection()}
     ${planSection()}
     <div class="git-commit-box">
-      <textarea class="git-msg" id="gitMsg" rows="1" placeholder="Mensaje (⌘Enter para commitear)"></textarea>
+      <textarea class="git-msg" id="gitMsg" rows="1" placeholder="${gitInfo.detached ? "Mensaje (⌘Enter para commitear)" : `Mensaje para ${escapeAttr(branch)} (⌘Enter)`}"></textarea>
       <div class="git-split">
         <button class="btn primary git-do" data-git-primary title="${escapeAttr(primary.title)}"${gitBusy || primary.disabled ? " disabled" : ""}>${escapeHtml(primary.label)}</button>
         <button class="btn primary git-do-more" data-git-commit-menu title="Más opciones"${gitBusy ? " disabled" : ""}>⌄</button>
@@ -1681,8 +1810,8 @@ function renderGit() {
     ${files.length ? "" : '<div class="git-section"><div class="git-clean">Árbol de trabajo limpio.</div></div>'}
     <div class="git-section">
       <div class="git-section-head">
-        <span>Commits</span>
-        <span class="mono muted small">${gitInfo.upstream ? escapeHtml(gitInfo.upstream) : "sin remoto"}</span>
+        <span>Commits${onBranch}</span>
+        <span class="mono muted small">${gitInfo.upstream ? `→ ${escapeHtml(gitInfo.upstream)}` : "sin remoto"}</span>
       </div>
       ${commits.length ? `<div class="git-commits">${commitRows}</div>` : '<div class="git-clean">Todavía no hay commits.</div>'}
     </div>`;
@@ -1720,6 +1849,9 @@ function renderGit() {
   card.querySelector("[data-git-remote-set]")?.addEventListener("click", () => connectRemote());
   card.querySelector("[data-git-gh]")?.addEventListener("click", (e) => openGhMenu(e.currentTarget));
   card.querySelector("[data-git-branches]").addEventListener("click", (e) => openBranchMenu(e.currentTarget));
+  card.querySelectorAll("[data-git-switch]").forEach((btn) => {
+    btn.addEventListener("click", () => gitRun(() => api("/api/git/checkout", { path: gitDir(), branch: btn.dataset.gitSwitch })));
+  });
   card.querySelector("[data-git-sync]").addEventListener("click", () => doSync());
   card.querySelector("[data-git-primary]").addEventListener("click", () => runGitPrimary());
   card.querySelector("[data-git-commit-menu]").addEventListener("click", (e) => openCommitMenu(e.currentTarget));
@@ -1882,13 +2014,27 @@ async function openBranchMenu(anchor) {
   }
   const local = data.local || [];
   const remote = data.remote || [];
+  const names = new Set(local.map((b) => b.name));
+  const recent = readRecent(gitInfo?.root || dir).filter((b) => names.has(b) && b !== gitInfo?.branch);
 
-  const items = local.map((b) => ({
+  const items = [];
+  if (recent.length) {
+    items.push({ separator: "Recientes" });
+    recent.slice(0, 3).forEach((name) =>
+      items.push({
+        label: name,
+        onPick: () => gitRun(() => api("/api/git/checkout", { path: dir, branch: name })),
+      })
+    );
+    items.push({ separator: "Todas" });
+  }
+
+  items.push(...local.map((b) => ({
     label: b.name,
     hint: [b.ahead ? `↑${b.ahead}` : "", b.behind ? `↓${b.behind}` : "", b.gone ? "sin remoto" : ""].filter(Boolean).join(" "),
     checked: b.current,
     onPick: () => (b.current ? null : gitRun(() => api("/api/git/checkout", { path: dir, branch: b.name }))),
-  }));
+  })));
 
   if (remote.length) {
     items.push({ separator: "Remotas" });
@@ -2387,6 +2533,8 @@ async function loadConfig() {
   $("#cfgModel").value = config.model;
   $("#cfgSessionLimit").value = formatTokens(config.claude_session_limit ?? DEFAULT_SESSION_LIMIT);
   $("#cfgWeeklyLimit").value = formatTokens(config.claude_weekly_limit ?? DEFAULT_WEEKLY_LIMIT);
+  $("#cfgRemoteControl").checked = config.claude_remote_control !== false;
+  $("#cfgCardPrompts").checked = config.claude_card_prompts !== false;
   selectedParallel = config.max_parallel || 1;
   $("#infoPort").textContent = `:${config.app_port || 3131}`;
   renderParallel();
@@ -2403,6 +2551,8 @@ $("#saveConfigBtn").addEventListener("click", async () => {
       max_parallel: selectedParallel,
       claude_session_limit: parseTokenLimit($("#cfgSessionLimit").value),
       claude_weekly_limit: parseTokenLimit($("#cfgWeeklyLimit").value),
+      claude_remote_control: $("#cfgRemoteControl").checked,
+      claude_card_prompts: $("#cfgCardPrompts").checked,
     }),
   });
   await loadConfig();
@@ -2636,7 +2786,11 @@ $("#clearRunsBtn").addEventListener("click", async () => {
 });
 
 $("#clearPlanBtn").addEventListener("click", async () => {
-  await fetch("/api/plan", { method: "DELETE" });
+  await fetch("/api/plan", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ all: true }),
+  });
   currentPlan = null;
   renderPlan();
 });

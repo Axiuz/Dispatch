@@ -566,6 +566,15 @@ const CodeEditor = (() => {
     });
   }
 
+  function cloneProject() {
+    window.cloneRepo(async (project) => {
+      if (!projects.some((pr) => pr.path === project.path)) projects.unshift(project);
+      await setRoot(project.path, { force: true });
+      renderProjectPicker();
+      flash(`Clonado ${project.name}`);
+    });
+  }
+
   // ---- Archivos abiertos ----
   async function openFile(file) {
     await ensureEditor();
@@ -761,6 +770,7 @@ const CodeEditor = (() => {
   $("#edNewFileBtn").addEventListener("click", () => createEntry("file"));
   $("#edNewDirBtn").addEventListener("click", () => createEntry("dir"));
   $("#edNewProjectBtn").addEventListener("click", createProject);
+  $("#edCloneBtn").addEventListener("click", cloneProject);
   $("#edSaveBtn").addEventListener("click", () => save());
 
   // ⌘S funciona aunque el foco no esté dentro de Monaco
