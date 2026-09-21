@@ -369,6 +369,8 @@ function connectStream() {
   es.addEventListener("git:changed", (e) => {
     const { path } = JSON.parse(e.data);
     if (path === gitDir()) loadGit({ refresh: true });
+    // El editor pinta las mismas letras en su árbol y sigue su propia carpeta
+    window.dispatchEvent(new CustomEvent("ed:git-changed", { detail: { path } }));
   });
 
   // Claude Code puede dejar el plan de commits puesto: si es el del repo que
@@ -2139,11 +2141,33 @@ function openGitMenu(anchor, items, { filter = false } = {}) {
     const btn = document.createElement("button");
     btn.className = `float-menu-item${item.checked ? " checked" : ""}`;
     btn.dataset.label = item.label.toLowerCase();
-    btn.innerHTML = `<span class="float-menu-label">${escapeHtml(item.label)}</span>${item.hint ? `<span class="float-menu-hint">${escapeHtml(item.hint)}</span>` : ""}`;
+    btn.innerHTML =
+      (item.icon || "") +
+      `<span class="float-menu-label">${escapeHtml(item.label)}</span>` +
+      (item.hint ? `<span class="float-menu-hint">${escapeHtml(item.hint)}</span>` : "");
     btn.addEventListener("click", () => {
       closeGitMenu();
       item.onPick?.();
     });
+
+    if (item.pin) {
+      const row = document.createElement("div");
+      row.className = "float-menu-row";
+      row.appendChild(btn);
+      const pin = document.createElement("button");
+      pin.className = `float-menu-pin${item.pin.pinned ? " on" : ""}`;
+      pin.title = item.pin.pinned ? "Quitar de la barra" : "Fijar en la barra";
+      pin.innerHTML = item.pin.icon || "📌";
+      // El pin no cierra el menú: se fijan varias vistas de una vez
+      pin.addEventListener("click", (e) => {
+        e.stopPropagation();
+        item.pin.onPin?.();
+        pin.classList.toggle("on");
+      });
+      row.appendChild(pin);
+      list.appendChild(row);
+      return;
+    }
     list.appendChild(btn);
   });
 

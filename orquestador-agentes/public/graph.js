@@ -660,7 +660,11 @@ const CodeMap = (() => {
     } catch (_) {
       return;
     }
-    const preferred = currentPath || (typeof currentPlan !== "undefined" && currentPlan?.project) || list[0]?.path;
+    const preferred =
+      currentPath ||
+      window.CodeEditor?.rootPath?.() ||
+      (typeof currentPlan !== "undefined" && currentPlan?.project) ||
+      list[0]?.path;
     select.innerHTML =
       '<option value="">Elige una carpeta…</option>' +
       list
