@@ -8,7 +8,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { parseBranchLine, parseTrack, parseStatus, parseLog, parseBranches, markUnpushed, branchNameError, relPathError, commitArgs, checkoutArgs, isLockError, remoteUrlError, remoteNameError, repoNameError, parseRemotes, cloneNameFromUrl, cloneArgs } = require("../git");
+const { parseBranchLine, parseTrack, parseStatus, parseLog, parseBranches, markUnpushed, branchNameError, relPathError, commitArgs, checkoutArgs, isLockError, remoteUrlError, remoteNameError, repoNameError, parseRemotes, cloneNameFromUrl, cloneArgs, errorSummary } = require("../git");
 
 const FIELD = "\x1f";
 const RECORD = "\x1e";
@@ -492,4 +492,55 @@ test("una url con pinta de bandera queda detrás de '--'", () => {
 
 test("los espacios de sobra no llegan a los argumentos", () => {
   assert.deepEqual(cloneArgs({ url: "  https://github.com/a/b.git  ", name: "  b  ", branch: "  dev  " }), ["clone", "--branch", "dev", "--", "https://github.com/a/b.git", "b"]);
+});
+
+
+const COMMIT_SIN_STAGE = [
+  "En la rama main",
+  "Cambios no rastreados para el commit:",
+  '  (usa "git add <archivo>..." para actualizar lo que será confirmado)',
+  "\tmodificados:     Scripts/build-dmg.sh",
+  "",
+  'sin cambios agregados al commit (usa "git add" y/o "git commit -a")',
+].join("\n");
+
+test("la causa de un fallo sale sin el prefijo de git", () => {
+  assert.equal(errorSummary("fatal: No configured push destination."), "No configured push destination.");
+  assert.equal(errorSummary("error: algo falló"), "algo falló");
+});
+
+test("la causa manda aunque venga con más líneas detrás", () => {
+  assert.equal(
+    errorSummary("fatal: The current branch tiene sin upstream\nhint: usa git push --set-upstream"),
+    "The current branch tiene sin upstream"
+  );
+});
+
+test("sin línea de causa se enseña la última, que es el resumen de git", () => {
+  assert.equal(errorSummary(COMMIT_SIN_STAGE), 'sin cambios agregados al commit (usa "git add" y/o "git commit -a")');
+  assert.equal(
+    errorSummary("On branch main\nUntracked files:\n\ta.js\n\nnothing added to commit (use \"git add\")"),
+    'nothing added to commit (use "git add")'
+  );
+});
+
+test("una salida de una sola línea se enseña entera", () => {
+  assert.equal(errorSummary("una sola línea"), "una sola línea");
+});
+
+test("los espacios y las líneas en blanco de los bordes no cuentan", () => {
+  assert.equal(errorSummary("\n\n   fatal: algo   \n\n"), "algo");
+});
+
+test("sin salida se dice que git no pudo, en vez de dejarlo vacío", () => {
+  assert.equal(errorSummary(""), "git no pudo completar la operación");
+  assert.equal(errorSummary("   \n  \n"), "git no pudo completar la operación");
+  assert.equal(errorSummary(null), "git no pudo completar la operación");
+  assert.equal(errorSummary(undefined), "git no pudo completar la operación");
+});
+
+test("una línea larguísima se recorta a 200 caracteres", () => {
+  const long = errorSummary("a".repeat(400));
+  assert.equal(long.length, 200);
+  assert.ok(long.endsWith("…"));
 });

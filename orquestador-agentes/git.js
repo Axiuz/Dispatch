@@ -431,6 +431,26 @@ function cloneNameFromUrl(url) {
   return name;
 }
 
+const MAX_SUMMARY = 200;
+const GIT_CAUSE = /^(fatal|error):\s*/i;
+
+// Extrae la causa de un error de git: la primera línea que empieza por "fatal:" o "error:",
+// y si no hay ninguna, la última línea no vacía, que es donde git deja el resumen. Busca la
+// forma de la salida y no frases concretas, porque git contesta en español o en inglés según
+// el sistema. El texto se recorta a 200 caracteres porque va en una franja de una línea; la
+// salida entera se sigue mandando aparte, para el detalle desplegable.
+function errorSummary(output) {
+  const lines = String(output || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return "git no pudo completar la operación";
+
+  const cause = lines.find((l) => GIT_CAUSE.test(l));
+  const line = (cause || lines[lines.length - 1]).replace(GIT_CAUSE, "");
+  return line.length > MAX_SUMMARY ? `${line.slice(0, MAX_SUMMARY - 1)}…` : line;
+}
+
 // Analiza la salida de 'git remote -v' para extraer los remotos válidos (nombre, URL, tipo fetch/push),
 // guardándolos en un mapa para evitar duplicados. Devuelve un array con los remotos únicos y válidos.
 function parseRemotes(stdout) {
@@ -693,6 +713,7 @@ module.exports = {
   remoteNameError,
   repoNameError,
   cloneNameFromUrl,
+  errorSummary,
   parseRemotes,
   isLockError,
   commitArgs,

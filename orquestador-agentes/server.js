@@ -1596,7 +1596,7 @@ async function gitWrite(dir, result, res) {
     gitCache.set(dir, { at: Date.now(), data });
   } catch (_) {}
   broadcast("git:changed", { path: dir });
-  res.json({ ok: result.ok, output: result.output, git: data });
+  res.json({ ok: result.ok, output: result.output, summary: result.ok ? null : gitinfo.errorSummary(result.output), git: data });
 }
 
 app.get("/api/git/branches", async (req, res) => {
