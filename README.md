@@ -343,6 +343,10 @@ POST   /api/files/stat             {paths: []} — fechas de los archivos abiert
 GET    /api/git?path=&refresh=     rama, archivos cambiados y últimos commits
 GET    /api/git/branches?path=     ramas locales y remotas, con ahead/behind
 POST   /api/git/checkout           {path, branch, create?, track?}
+GET    /api/git/worktrees?path=    carpetas de trabajo del repositorio y su rama
+POST   /api/git/worktree           {path, branch, parent?, name?, create?, track?}
+DELETE /api/git/worktree           {path, target} — borra la carpeta del disco
+POST   /api/git/worktree/prune     {path} — limpia las carpetas que ya no están
 POST   /api/git/stage              {path, files?, all?}
 POST   /api/git/unstage            {path, files?, all?}
 POST   /api/git/commit             {path, message, amend?, all?, then?: push|sync}
@@ -351,6 +355,18 @@ POST   /api/git/clone              {parent, url, name?, branch?} — clona dentr
 GET    /api/git/plan?path=         plan de commits del repositorio
 POST   /api/git/plan               {path, text} o {path, commits: []}
 DELETE /api/git/plan               {path, index?} — un commit o el plan entero
+
+GET    /api/preview               servidores de vista previa en marcha
+POST   /api/preview               {path} — sirve esa carpeta en un puerto libre
+DELETE /api/preview               {path} — para ese servidor
+POST   /api/preview/open          {url} — abre la URL en el navegador de verdad
+
+GET    /api/android               {sdk, avds, devices, scrcpy}
+POST   /api/android/start         {avd, coldBoot?}
+POST   /api/android/stop          {serial}
+POST   /api/android/mirror        {serial} — abre scrcpy
+POST   /api/android/install       {serial, apk} — el apk, dentro de un proyecto
+POST   /api/android/url           {serial, url} — la abre en el dispositivo
 
 GET    /api/notes?path=            notas y to-dos de una carpeta
 POST   /api/notes                  {path, text} — añade una nota
@@ -426,24 +442,45 @@ y al volver se reproduce el scrollback.
 
 ### Notas y to-dos
 
-El dock tiene dos pestañas, **TERMINAL** y **NOTAS**, y se cambian como las de
-Chrome: las dos comparten la misma caja y el mismo alto, y la shell sigue viva
-mientras miras las notas. Al lado del nombre de la pestaña va el número de
-pendientes.
+Las notas viven en la pestaña **Editor**, en la barra de vistas de la izquierda,
+junto al Explorador, Buscar, Ramas y Extensiones; el atajo es **⇧⌘N**. El número
+de pendientes sale como insignia en su icono, así que se ve sin abrir la vista.
 
-Se escriben en el campo de arriba y se añaden con Enter. Cada nota se marca como
-hecha con su casilla, se edita haciendo clic en su texto —Enter guarda, Escape
-cancela— y se borra con la ✕. Abajo, el contador de pendientes y un botón para
-limpiar las hechas de una vez.
+Se añaden escribiendo arriba y pulsando Enter. Cada nota se marca como hecha con
+su casilla, se edita haciendo clic en su texto —Enter guarda, Escape cancela— y se
+borra con la ✕. Abajo, el contador de pendientes y un botón para limpiar las
+hechas de una vez.
 
 Las notas se guardan en `data/notes.json` del orquestador, **no dentro de tu
 repositorio**: son tuyas, no del proyecto, y así no acaban en un commit ni te
 obligan a mantener una línea en su `.gitignore`. Sobreviven al reinicio del
-servidor.
+servidor. Están indexadas por carpeta y siguen a la que tengas abierta en el
+editor: cambiar de proyecto cambia la lista. El tope es de 200 notas por proyecto
+y 4000 caracteres por nota.
 
-Están indexadas por carpeta y siguen a la misma que la tarjeta de Control de
-código: cambiar de proyecto cambia la lista. El tope es de 200 notas por
-proyecto y 4000 caracteres por nota.
+### Ramas y carpetas de trabajo
+
+La vista **Ramas** (**⇧⌘B**) lista las ramas locales con su color, su ahead/behind
+y, por rama, dos acciones: *cambiar*, que hace el checkout en la carpeta que tienes
+abierta, y *+ carpeta*, que saca esa rama en una carpeta nueva con `git worktree`.
+La rama actual también se ve en la barra de estado del editor, abajo a la
+izquierda, y un clic ahí abre el menú de ramas sin cambiar de vista.
+
+Cada carpeta de trabajo se da de alta en **Proyectos**, así que es un proyecto más:
+tiene su propio estado de Git, sus propias notas y su propia terminal. Es lo que
+permite tener `main` y una rama de trabajo abiertas a la vez y editarlas
+independientemente, sin `stash` y sin cambiar de rama para mirar algo. Debajo de
+las ramas locales salen las carpetas que ya existen, para abrirlas o quitarlas
+—quitar borra la carpeta del disco; la rama y sus commits se quedan—, y al final
+las ramas remotas, para sacarlas aquí o en una carpeta nueva. Una rama que ya tiene
+carpeta no se ofrece para cambiar, se ofrece para abrir: git no deja sacar la misma
+rama en dos carpetas a la vez.
+
+Al cambiar de rama, el editor relee el árbol conservando lo que tenías desplegado,
+recarga los archivos abiertos sin moverte el cursor y cierra los que no existen en
+la rama nueva, salvo que tengan cambios sin guardar. El cambio se nota igual si lo
+haces desde la terminal: mientras el editor está delante vuelve a preguntar por la
+rama cada cinco segundos.
 
 ---
 
@@ -518,6 +555,36 @@ cada commit es un clic tuyo.
 
 ---
 
+## Preview: web en vivo y emuladores
+
+### La web
+
+Elige un proyecto y el panel levanta un servidor estático en un puerto libre y lo
+enseña en un iframe, dentro de la misma ventana. Al guardar un archivo la vista se
+recarga sola, y si lo que cambió es un `.css` se intercambian las hojas de estilo
+sin recargar la página, así que no pierdes el sitio donde estabas.
+
+El servidor no sirve archivos ocultos ni `node_modules`, escucha solo en
+`127.0.0.1` y rechaza las peticiones que no vengan de esta máquina. Si tu proyecto
+ya levanta su propio dev server (Vite, Next), el modo **URL externa** apunta el
+iframe ahí y el panel no sirve nada. La barra trae tres anchos —móvil (390 px),
+tablet (820 px) y ancho completo—, recargar, abrirlo en el navegador de verdad y
+pararlo. Hay un tope de tres servidores a la vez.
+
+### Android
+
+La otra sección lista los AVDs de tu SDK, los arranca —normal o en frío— y los
+para. Los dispositivos en marcha salen con su serial, su AVD y su versión de
+Android, y cada uno trae botones para abrir el espejo con **scrcpy** si lo tienes
+instalado, instalar un APK que esté dentro de un proyecto abierto, abrir una URL o
+apagarlo. La pantalla del emulador se ve en su propia ventana, no dentro del panel.
+
+El botón **Emulador** de la sección web abre la vista previa dentro del
+dispositivo. Antes hace `adb reverse` del puerto, porque el `localhost` del móvil
+es el suyo y no el del Mac: sin eso, el navegador del emulador no vería nada.
+
+---
+
 ## Seguridad
 
 El panel puede abrir una terminal en tu Mac, así que solo acepta peticiones
@@ -544,9 +611,12 @@ orquestador-agentes/          raíz del repo
     git.js                    estado y operaciones de Git de una carpeta
     commitplan.js             parser del plan de commits del documenter
     notes.js                  notas y to-dos de cada proyecto: normalizador y topes
+    preview.js                servidor estático con recarga en vivo, uno por carpeta
+    android.js                emuladores: AVDs, dispositivos y operaciones de adb
     claudeusage.js            tokens que gasta Claude Code, leídos de sus transcripts
     safepath.js               contención de rutas del editor
-    public/                   panel: index.html, styles.css, app.js, graph.js, editor.js
+    public/                   panel: index.html, styles.css, app.js, graph.js,
+                              editor.js, preview.js
     data/                     agents.json, config.json (y plan.json, projects.json,
                               commitplans.json, notes.json, ignorados por git)
     test/                     tests del escáner, el tablero, las rutas, Git y el
@@ -579,8 +649,19 @@ orquestador-agentes/          raíz del repo
 - La tarjeta de Git cambia de rama, prepara archivos y commitea, pero no enseña
   diffs ni resuelve conflictos: un merge con conflictos, un rebase, un stash o un
   push forzado se siguen haciendo en la terminal.
+- Una carpeta de trabajo con cambios sin guardar no se quita desde el panel: se
+  llama a `git worktree remove` sin `--force`, así que git se niega y enseña por
+  qué. Y la carpeta que tienes abierta en el editor no se ofrece para quitar:
+  primero se abre otra.
 - El conteo de tokens de los agentes locales es una estimación. El de Claude Code
   es real, pero sale de sus archivos: solo se leen los últimos 7 días y, si los
   borras, el histórico se va con ellos.
 - El editor de agentes guarda el array completo: dos pestañas editando a la vez
   se pisan.
+- La vista previa recarga la página entera salvo cuando el cambio es solo CSS: no
+  hay reemplazo de módulos en caliente, así que el estado de la página se pierde.
+  Y sirve los archivos tal cual: un proyecto que haya que compilar (React, Vue) se
+  ve por su propio dev server, en el modo de URL externa.
+- La pantalla del emulador no se ve dentro del panel: se ve en su ventana o en
+  scrcpy. Meterla dentro necesitaría el gRPC del emulador, que es otra
+  dependencia.
