@@ -15,6 +15,8 @@ const notesstore = require("./notes");
 const debugsuite = require("./debug");
 const inbox = require("./inbox");
 const search = require("./search");
+const preview = require("./preview");
+const androidlib = require("./android");
 const vsix = require("./vsix");
 const toolsuite = require("./tools");
 
@@ -420,6 +422,7 @@ usageTracker.start();
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => {
     sessions.forEach(killSession);
+    preview.stopAll();
     usageTracker.stop();
     process.exit(0);
   });
@@ -1987,7 +1990,7 @@ const gitPaths = (files) => (Array.isArray(files) ? files.slice(0, MAX_GIT_PATHS
 
 // Toda escritura responde igual: si salió bien, lo que dijo git, y el estado ya
 // releído, para que el panel se actualice sin esperar a su sondeo de 5 s.
-async function gitWrite(dir, result, res) {
+async function gitWrite(dir, result, res, extra = {}) {
   gitCache.delete(dir);
   let data = null;
   try {
@@ -1995,7 +1998,7 @@ async function gitWrite(dir, result, res) {
     gitCache.set(dir, { at: Date.now(), data });
   } catch (_) {}
   broadcast("git:changed", { path: dir });
-  res.json({ ok: result.ok, output: result.output, summary: result.ok ? null : gitinfo.errorSummary(result.output), git: data });
+  res.json({ ok: result.ok, output: result.output, summary: result.ok ? null : gitinfo.errorSummary(result.output), git: data, ...extra });
 }
 
 app.get("/api/git/branches", async (req, res) => {
@@ -2014,6 +2017,95 @@ app.post("/api/git/checkout", async (req, res) => {
   const { branch, create, track } = req.body || {};
   if (typeof branch !== "string") return res.status(400).json({ error: "Falta 'branch'" });
   await gitWrite(dir, await gitinfo.checkout(dir, { branch, create: !!create, track: !!track }), res);
+});
+
+// ---- Worktrees ----
+// Una rama en su propia carpeta: el worktree es un proyecto más de la lista, así
+// que el editor, la tarjeta de Git y la terminal lo tratan como cualquier otra
+// carpeta sin saber que comparte el .git con el principal.
+app.get("/api/git/worktrees", async (req, res) => {
+  const dir = gitDirOf(req, res);
+  if (!dir) return;
+  try {
+    const data = await gitinfo.listWorktrees(dir);
+    const known = new Set(projects.map((p) => p.path));
+    res.json({
+      ...data,
+      worktrees: data.worktrees.map((w) => ({ ...w, exists: isDirectory(w.path), project: known.has(w.path) })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// La carpeta nueva se valida como en /api/git/clone y /api/projects/new: dentro
+// de la carpeta personal y con un nombre que no sea una ruta. Por defecto va al
+// lado del worktree principal y se llama <repo>-<rama>.
+app.post("/api/git/worktree", async (req, res) => {
+  const dir = gitDirOf(req, res);
+  if (!dir) return;
+  if (typeof req.body.branch !== "string") return res.status(400).json({ error: "Falta 'branch'" });
+
+  let branch = req.body.branch.trim();
+  let create = !!req.body.create;
+  let start = "";
+  // Con track la rama que llega es la remota ("origin/x") y la local es lo que
+  // va detrás del primer "/", igual que en el checkout de la tarjeta
+  if (req.body.track) {
+    start = branch;
+    branch = branch.split("/").slice(1).join("/");
+    create = true;
+  }
+
+  const list = await gitinfo.listWorktrees(dir);
+  if (!list.repo) return res.status(400).json({ error: "Esta carpeta no está en un repositorio Git" });
+  const mainRoot = list.worktrees.find((w) => w.main)?.path || list.root;
+
+  const parent = safepath.insideHome(req.body.parent || path.dirname(mainRoot));
+  if (!parent || !isDirectory(parent)) {
+    return res.status(403).json({ error: "La carpeta donde crear el worktree tiene que ser una carpeta tuya dentro de " + os.homedir() });
+  }
+
+  const folder = String(req.body.name || "").trim() || gitinfo.worktreeName(path.basename(mainRoot), branch);
+  if (!folder) return res.status(400).json({ error: "De esa rama no sale un nombre de carpeta: manda 'name'" });
+  const badName = safepath.entryNameError(folder);
+  if (badName) return res.status(400).json({ error: badName });
+
+  const target = path.join(parent, folder);
+  if (fs.existsSync(target)) return res.status(409).json({ error: "Ya existe algo con ese nombre" });
+
+  const result = await gitinfo.addWorktree(dir, { target, branch, create, start });
+  if (result.ok) touchProject(target);
+  await gitWrite(dir, result, res, { worktree: result.ok ? projectView(projects.find((p) => p.path === target)) : null });
+});
+
+// Borra la carpeta del disco, así que git decide: sin --force, un worktree con
+// cambios sin guardar no se va y su mensaje es lo que se enseña.
+app.delete("/api/git/worktree", async (req, res) => {
+  const dir = gitDirOf(req, res);
+  if (!dir) return;
+  const target = safepath.insideHome(req.body.target);
+  if (!target) {
+    return res.status(403).json({ error: "Solo se quitan worktrees que estén dentro de " + os.homedir() });
+  }
+
+  const result = await gitinfo.removeWorktree(dir, { target });
+  if (result.ok) {
+    projects = projects.filter((p) => p.path !== target);
+    saveJSON(PROJECTS_PATH, projects);
+    [...sessions.values()].filter((s) => s.cwd === target).forEach(killSession);
+    broadcastSessions();
+    broadcastProjects();
+  }
+  await gitWrite(dir, result, res);
+});
+
+// Para las carpetas que el usuario borró a mano: git sigue anunciándolas como
+// worktrees (prunable) hasta que se limpian sus registros.
+app.post("/api/git/worktree/prune", async (req, res) => {
+  const dir = gitDirOf(req, res);
+  if (!dir) return;
+  await gitWrite(dir, await gitinfo.pruneWorktrees(dir), res);
 });
 
 app.post("/api/git/stage", async (req, res) => {
@@ -2302,6 +2394,108 @@ app.delete("/api/notes", (req, res) => {
   writeNotes(dir, next, res);
 });
 
+// ---- Vista previa web ----
+// Un servidor estático por carpeta, con recarga en vivo (preview.js). La carpeta
+// se valida contra Proyectos igual que el editor y Git; parar solo pide la ruta
+// de un servidor que ya está en marcha, y esa ruta solo pudo entrar validada.
+app.get("/api/preview", (req, res) => {
+  res.json({ servers: preview.list(), max: preview.MAX_SERVERS });
+});
+
+app.post("/api/preview", async (req, res) => {
+  const dir = insideProject(req.body.path);
+  if (!dir || !isDirectory(dir)) return res.status(403).json(FORBIDDEN);
+  try {
+    const entry = await preview.start(dir);
+    broadcast("preview:update", preview.list());
+    res.json(entry);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/preview", (req, res) => {
+  const dir = safepath.expandPath(req.body && req.body.path);
+  if (!dir || !preview.get(dir)) return res.status(404).json({ error: "Ahí no hay ningún servidor" });
+  preview.stop(dir);
+  broadcast("preview:update", preview.list());
+  res.json({ ok: true, servers: preview.list() });
+});
+
+// Abrir en el navegador de verdad. Es un execFile de "open", así que la URL tiene
+// que ser de esta máquina: `localUrlError()` rechaza cualquier otra cosa.
+app.post("/api/preview/open", (req, res) => {
+  const url = String((req.body && req.body.url) || "").trim();
+  const bad = preview.localUrlError(url);
+  if (bad) return res.status(400).json({ error: bad });
+  child_process.execFile("open", [url], { timeout: 5000 }, () => {});
+  res.json({ ok: true });
+});
+
+// ---- Emuladores de Android ----
+// adb y emulator salen del SDK (android.js), nunca del PATH, y se llaman con
+// execFile y argumentos fijos. El panel manda un AVD o un serial; ninguna ruta
+// del disco llega aquí sin pasar por Proyectos.
+let android = androidlib.create({ config });
+
+app.get("/api/android", async (req, res) => {
+  try {
+    res.json(await android.state({ refresh: Boolean(req.query.refresh) }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Toda escritura responde igual: lo que dijo la herramienta y el estado releído,
+// que es lo que repinta el panel sin esperar a su sondeo.
+async function androidWrite(res, result) {
+  let state = null;
+  try {
+    state = await android.state({ refresh: true });
+    broadcast("android:update", state);
+  } catch (_) {}
+  res.json({ ok: result.ok, output: result.output, android: state });
+}
+
+app.post("/api/android/start", async (req, res) => {
+  await androidWrite(res, android.start({ avd: req.body.avd, coldBoot: Boolean(req.body.coldBoot) }));
+});
+
+app.post("/api/android/stop", async (req, res) => {
+  await androidWrite(res, await android.stop({ serial: req.body.serial }));
+});
+
+app.post("/api/android/mirror", async (req, res) => {
+  await androidWrite(res, android.mirror({ serial: req.body.serial }));
+});
+
+app.post("/api/android/install", async (req, res) => {
+  const apk = insideProject(req.body.apk);
+  if (!apk || !fs.existsSync(apk)) return res.status(403).json(FORBIDDEN);
+  await androidWrite(res, await android.install({ serial: req.body.serial, apk }));
+});
+
+// El puente con la preview: si la URL es de esta máquina, antes de abrirla se
+// hace `adb reverse` de su puerto, porque el localhost del móvil es el suyo y no
+// el del Mac. Sin eso, el navegador del emulador no vería nada.
+app.post("/api/android/url", async (req, res) => {
+  const raw = String((req.body && req.body.url) || "").trim();
+  let target = raw;
+  try {
+    const parsed = new URL(raw);
+    if (["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) {
+      const port = Number(parsed.port || 80);
+      const back = await android.reverse({ serial: req.body.serial, port });
+      if (!back.ok) return androidWrite(res, back);
+      parsed.hostname = "localhost";
+      target = parsed.href;
+    }
+  } catch (_) {
+    // una URL ilegible la rechaza openUrl con su mensaje
+  }
+  await androidWrite(res, await android.openUrl({ serial: req.body.serial, url: target }));
+});
+
 // ---- Hooks de Claude Code ----
 // Devuelve la sesión de Claude activa en la carpeta del plan; sin proyecto, solo
 // si hay una única sesión abierta, para no adivinar a cuál mandarle las tarjetas.
@@ -2556,6 +2750,7 @@ app.post("/api/config", (req, res) => {
   config = { ...config, ...req.body };
   saveJSON(CONFIG_PATH, config);
   fillFreeSlots();
+  android = androidlib.create({ config });
   res.json(config);
 });
 
