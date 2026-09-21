@@ -8,7 +8,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { parseBranchLine, parseTrack, parseStatus, parseLog, parseBranches, markUnpushed, branchNameError, relPathError, commitArgs, checkoutArgs, isLockError, remoteUrlError, remoteNameError, repoNameError, parseRemotes, cloneNameFromUrl, cloneArgs, errorSummary } = require("../git");
+const { parseBranchLine, parseTrack, parseStatus, parseLog, parseBranches, markUnpushed, branchNameError, relPathError, commitArgs, checkoutArgs, isLockError, remoteUrlError, remoteNameError, repoNameError, parseRemotes, cloneNameFromUrl, cloneArgs, errorSummary, parseWorktrees, worktreeAddArgs, worktreeName } = require("../git");
 
 const FIELD = "\x1f";
 const RECORD = "\x1e";
@@ -543,4 +543,196 @@ test("una línea larguísima se recorta a 200 caracteres", () => {
   const long = errorSummary("a".repeat(400));
   assert.equal(long.length, 200);
   assert.ok(long.endsWith("…"));
+});
+
+// ---- Worktrees ----
+
+test("worktreeName con rama que contiene /", () => {
+  assert.equal(worktreeName("repo", "main/branch"), "repo-main-branch");
+});
+
+test("worktreeName con rama con caracteres raros", () => {
+  assert.equal(worktreeName("repo", "¡hola!@#$%"), "repo-hola");
+});
+
+test("worktreeName con rama vacía", () => {
+  assert.equal(worktreeName("repo", ""), "");
+});
+
+test("worktreeName con nombre vacío", () => {
+  assert.equal(worktreeName("", "main"), "");
+});
+
+test("worktreeName con nombre y rama vacías", () => {
+  assert.equal(worktreeName("", ""), "");
+});
+
+test("worktreeName con rama sin caracteres válidos", () => {
+  assert.equal(worktreeName("repo", "  .  -  "), "");
+});
+
+test("parseWorktrees con salida vacía", () => {
+  assert.deepEqual(parseWorktrees(""), []);
+});
+
+test("parseWorktrees con una sola entrada", () => {
+  assert.deepEqual(
+    parseWorktrees("worktree /home/user\nHEAD abc123\nbranch refs/heads/main"),
+    [
+      {
+        path: "/home/user",
+        head: "abc123",
+        branch: "main",
+        detached: false,
+        bare: false,
+        locked: false,
+        prunable: false,
+        reason: null,
+        main: true,
+      },
+    ]
+  );
+});
+
+test("parseWorktrees con múltiples entradas", () => {
+  assert.deepEqual(
+    parseWorktrees(
+      "worktree /home/user\nHEAD abc123\nbranch refs/heads/main\n\nworktree /home/user2\nHEAD def456\ndetached\n"
+    ),
+    [
+      {
+        path: "/home/user",
+        head: "abc123",
+        branch: "main",
+        detached: false,
+        bare: false,
+        locked: false,
+        prunable: false,
+        reason: null,
+        main: true,
+      },
+      {
+        path: "/home/user2",
+        head: "def456",
+        branch: null,
+        detached: true,
+        bare: false,
+        locked: false,
+        prunable: false,
+        reason: null,
+        main: false,
+      },
+    ]
+  );
+});
+
+test("parseWorktrees con worktree desnudo", () => {
+  assert.deepEqual(
+    parseWorktrees("worktree /home/user\nbare"),
+    [
+      {
+        path: "/home/user",
+        head: null,
+        branch: null,
+        detached: false,
+        bare: true,
+        locked: false,
+        prunable: false,
+        reason: null,
+        main: true,
+      },
+    ]
+  );
+});
+
+test("parseWorktrees con locked con motivo", () => {
+  assert.deepEqual(
+    parseWorktrees("worktree /home/user\nlocked by team"),
+    [
+      {
+        path: "/home/user",
+        head: null,
+        branch: null,
+        detached: false,
+        bare: false,
+        locked: true,
+        prunable: false,
+        reason: "by team",
+        main: true,
+      },
+    ]
+  );
+});
+
+test("parseWorktrees con prunable con motivo", () => {
+  assert.deepEqual(
+    parseWorktrees("worktree /home/user\nprunable because of merge"),
+    [
+      {
+        path: "/home/user",
+        head: null,
+        branch: null,
+        detached: false,
+        bare: false,
+        locked: false,
+        prunable: true,
+        reason: "because of merge",
+        main: true,
+      },
+    ]
+  );
+});
+
+test("parseWorktrees con locked y prunable", () => {
+  assert.deepEqual(
+    parseWorktrees("worktree /home/user\nlocked by team\nprunable because of merge"),
+    [
+      {
+        path: "/home/user",
+        head: null,
+        branch: null,
+        detached: false,
+        bare: false,
+        locked: true,
+        prunable: true,
+        reason: "because of merge",
+        main: true,
+      },
+    ]
+  );
+});
+
+test("worktreeAddArgs con rama existente (sin -b)", () => {
+  assert.deepEqual(worktreeAddArgs({ dir: "dir", branch: "main" }), ["worktree", "add", "dir", "main"]);
+});
+
+test("worktreeAddArgs con crear rama", () => {
+  assert.deepEqual(worktreeAddArgs({ dir: "dir", branch: "main", create: true }), [
+    "worktree",
+    "add",
+    "-b",
+    "main",
+    "dir",
+  ]);
+});
+
+test("worktreeAddArgs con crear siguiendo una remota", () => {
+  assert.deepEqual(worktreeAddArgs({ dir: "dir", branch: "main", create: true, start: "origin/main" }), [
+    "worktree",
+    "add",
+    "--track",
+    "-b",
+    "main",
+    "dir",
+    "origin/main",
+  ]);
+});
+
+test("worktreeAddArgs con create false y rama existente", () => {
+  assert.deepEqual(worktreeAddArgs({ dir: "dir", branch: "main", create: false }), [
+    "worktree",
+    "add",
+    "dir",
+    "main",
+  ]);
 });

@@ -648,6 +648,135 @@ async function setRemote(dir, { name = "origin", url } = {}) {
   return runGit(root, ["remote", action, name.trim(), String(url).trim()]);
 }
 
+// ================= Worktrees =================
+const WORKTREE_SLUG = /[^a-zA-Z0-9._-]+/g;
+
+function worktreeName(repoName, branch) {
+  const slug = String(branch || "")
+    .trim()
+    .replace(WORKTREE_SLUG, "-")
+    .replace(/^[-.]+|-+$/g, "");
+  const base = String(repoName || "").trim();
+  if (!slug || !base) return "";
+  return `${base}-${slug}`;
+}
+
+function parseWorktrees(stdout) {
+  const list = [];
+  let current = null;
+
+  const flush = () => {
+    if (current) list.push(current);
+    current = null;
+  };
+
+  for (const raw of String(stdout || "").split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    const [key, rest] = splitOnce(line, " ");
+    const value = rest === null ? "" : rest.trim();
+
+    if (key === "worktree") {
+      flush();
+      current = {
+        path: value,
+        head: null,
+        branch: null,
+        detached: false,
+        bare: false,
+        locked: false,
+        prunable: false,
+        reason: null,
+        main: list.length === 0,
+      };
+      continue;
+    }
+    if (!current) continue;
+
+    if (key === "HEAD") current.head = value || null;
+    else if (key === "branch") current.branch = value.replace(/^refs\/heads\//, "") || null;
+    else if (key === "detached") current.detached = true;
+    else if (key === "bare") current.bare = true;
+    else if (key === "locked") {
+      current.locked = true;
+      current.reason = value || current.reason;
+    } else if (key === "prunable") {
+      current.prunable = true;
+      current.reason = value || current.reason;
+    }
+  }
+  flush();
+  return list;
+}
+
+// `git worktree add [--track] [-b <rama>] <carpeta> [<punto de partida>]`: las
+// banderas van antes de la carpeta, y el punto de partida (una rama remota) al
+// final. Sin -b la rama tiene que existir ya y no puede estar sacada en otra
+// carpeta: eso lo dice git, no nosotros.
+function worktreeAddArgs({ dir, branch, create = false, start = "" } = {}) {
+  const args = ["worktree", "add"];
+  if (create) {
+    if (start) args.push("--track");
+    args.push("-b", String(branch), String(dir));
+    if (start) args.push(String(start));
+  } else {
+    args.push(String(dir), String(branch));
+  }
+  return args;
+}
+
+const badTarget = (dir) =>
+  !dir || !path.isAbsolute(String(dir)) ? "La carpeta del worktree tiene que ser una ruta absoluta" : null;
+
+async function listWorktrees(dir) {
+  const root = findRepoRoot(dir);
+  if (!root) return { repo: false, root: null, error: null, worktrees: [] };
+  const out = await execGit(root, ["worktree", "list", "--porcelain"], GIT_TIMEOUT_MS);
+  if (!out.ok) return { repo: true, root, error: out.output, worktrees: [] };
+  const worktrees = parseWorktrees(out.stdout).map((w) => ({ ...w, current: w.path === root }));
+  return { repo: true, root, error: null, worktrees };
+}
+
+async function addWorktree(dir, { target, branch, create = false, start = "" } = {}) {
+  const root = findRepoRoot(dir);
+  if (!root) return notRepo();
+  const badPath = badTarget(target);
+  if (badPath) return { ok: false, output: badPath };
+  const bad = branchNameError(branch);
+  if (bad) return { ok: false, output: bad };
+  if (start) {
+    const badStart = branchNameError(start);
+    if (badStart) return { ok: false, output: badStart };
+  }
+  return runGit(root, worktreeAddArgs({ dir: target, branch, create, start }), { timeout: NET_TIMEOUT_MS });
+}
+
+// Borra la carpeta del disco, así que antes se comprueba que sea de verdad un
+// worktree de este repositorio y que no sea el principal. Sin --force: un
+// worktree con cambios sin guardar no se tira, y git ya explica por qué.
+async function removeWorktree(dir, { target } = {}) {
+  const root = findRepoRoot(dir);
+  if (!root) return notRepo();
+  const badPath = badTarget(target);
+  if (badPath) return { ok: false, output: badPath };
+
+  const list = await listWorktrees(root);
+  const entry = list.worktrees.find((w) => w.path === target);
+  if (!entry) return { ok: false, output: "Esa carpeta no es un worktree de este repositorio" };
+  if (entry.main) return { ok: false, output: "El worktree principal no se puede quitar" };
+
+  return runGit(root, ["worktree", "remove", target]);
+}
+
+async function pruneWorktrees(dir) {
+  const root = findRepoRoot(dir);
+  if (!root) return notRepo();
+  return runGit(root, ["worktree", "prune"]);
+}
+
 const GH_STATUS_TIMEOUT_MS = 10000;
 
 // Ejecuta el comando 'gh' con los argumentos dados, con un límite de tiempo. Si 'gh' no está instalado,
@@ -719,9 +848,13 @@ module.exports = {
   commitArgs,
   checkoutArgs,
   cloneArgs,
+  parseWorktrees,
+  worktreeAddArgs,
+  worktreeName,
   // lectura
   readRepo,
   listBranches,
+  listWorktrees,
   isRepo,
   findRepoRoot,
   // escritura
@@ -736,6 +869,9 @@ module.exports = {
   clone,
   listRemotes,
   setRemote,
+  addWorktree,
+  removeWorktree,
+  pruneWorktrees,
   ghStatus,
   ghCreateRepo,
   LETTERS,
