@@ -325,12 +325,22 @@ const CodeEditor = (() => {
   let gitMarks = new Map(); // ruta absoluta -> {letter, kind, staged}
   let gitDirs = new Map(); // carpeta -> cuántos archivos cambiados cuelgan de ella
   let gitRoot = null;
+  let gitState = null; // {repo, root, branch, detached, ahead, behind} de la carpeta abierta
+  let gitSig = ""; // firma de rama + archivos cambiados: sin cambios no se repinta
 
-  const DEFAULT_PINNED = ["explorer", "search", "notes", "extensions"];
+  const DEFAULT_PINNED = ["explorer", "search", "branches", "notes", "extensions"];
   let pinned = readStore("ed.pinned", DEFAULT_PINNED);
+  // La barra ya fijada en localStorage no conoce las vistas nuevas: se añaden
+  // una vez, para que aparezcan sin tener que fijarlas a mano.
+  if (!readStore("ed.pinned.branches", false)) {
+    if (!pinned.includes("branches")) pinned = [...pinned, "branches"];
+    writeStore("ed.pinned.branches", true);
+    writeStore("ed.pinned", pinned);
+  }
   let view = readStore("ed.view", "explorer");
   let sideOpen = readStore("ed.side", true);
 
+  const GIT_POLL_MS = 5000;
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const baseName = (p) => p.split("/").pop();
   const dirName = (p) => p.slice(0, p.lastIndexOf("/"));
@@ -528,12 +538,15 @@ const CodeEditor = (() => {
   const VIEWS = [
     { id: "explorer", label: "Explorador", shortcut: "⇧⌘E", render: renderExplorer },
     { id: "search", label: "Buscar", shortcut: "⇧⌘F", render: renderSearchView },
+    { id: "branches", label: "Ramas", shortcut: "⇧⌘B", render: renderBranchesView },
     { id: "notes", label: "Notas", shortcut: "⇧⌘N", render: renderNotesView },
     { id: "extensions", label: "Extensiones", shortcut: "⇧⌘X", render: renderExtensionsView },
     { id: "map", label: "Mapa de código", shortcut: "⇧⌘M", action: () => showTab("mapa") },
   ];
 
   const viewById = (id) => VIEWS.find((v) => v.id === id) || VIEWS[0];
+
+  const viewBadge = (id) => (id === "notes" && notesPending() ? String(notesPending()) : "");
 
   // Pinta en la barra las vistas fijadas; el chevron abre el resto. Lo fijado es
   // una preferencia del usuario, así que vive en localStorage y no en el servidor.
@@ -545,7 +558,9 @@ const CodeEditor = (() => {
         .map(
           (v) =>
             `<button class="ed-act${v.id === view && sideOpen ? " active" : ""}" data-view="${v.id}" ` +
-            `title="${escapeAttr(`${v.label}  ${v.shortcut}`)}">${EdIcons.view(v.id)}</button>`
+            `title="${escapeAttr(`${v.label}  ${v.shortcut}`)}">${EdIcons.view(v.id)}` +
+            (viewBadge(v.id) ? `<span class="ed-act-badge">${viewBadge(v.id)}</span>` : "") +
+            `</button>`
         )
         .join("") +
       `<button class="ed-act ed-act-more" id="edMore" title="Más vistas">${EdIcons.view("chevron")}</button>`;
@@ -803,14 +818,18 @@ const CodeEditor = (() => {
   // carpetas distintas a la vez.
   let edNotes = [];
   let edNotesPath = null;
+  let notesEditing = null;
+
+  const notesPending = () => edNotes.filter((n) => !n.done).length;
 
   function renderNotesView(host) {
     host.innerHTML =
       viewHead("NOTAS") +
       `<form class="ed-note-form" id="edNoteForm">
-         <input class="ed-input" id="edNoteBox" type="text" placeholder="Nota nueva y Enter" />
+         <input class="ed-input" id="edNoteBox" type="text" maxlength="4000" placeholder="Nota nueva y Enter" />
        </form>
-       <div class="ed-notes" id="edNotes"></div>`;
+       <div class="ed-notes" id="edNotes"></div>
+       <div class="ed-notes-foot" id="edNotesFoot"></div>`;
 
     host.querySelector("#edNoteForm").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -819,6 +838,10 @@ const CodeEditor = (() => {
       if (!text || !root) return;
       box.value = "";
       await notesWrite("/api/notes", { text });
+    });
+
+    host.querySelector("#edNotesFoot").addEventListener("click", (e) => {
+      if (e.target.closest("[data-notes-clear]")) notesWrite("/api/notes", { done: true }, "DELETE");
     });
 
     renderNotesList();
@@ -853,7 +876,9 @@ const CodeEditor = (() => {
       });
       const data = await res.json();
       if (!res.ok) return alert(data.error || `HTTP ${res.status}`);
+      if (data.path && data.path !== root) return;
       edNotes = data.items || [];
+      notesEditing = null;
       renderNotesList();
     } catch (err) {
       alert(err.message);
@@ -861,17 +886,27 @@ const CodeEditor = (() => {
   }
 
   function renderNotesList() {
+    renderActivity();
     const host = $("#edNotes");
-    if (!host) return;
-    if (!root) return (host.innerHTML = '<div class="ed-view-empty">Abre un proyecto para tener notas suyas.</div>');
-    if (!edNotes.length) return (host.innerHTML = '<div class="ed-view-empty">Sin notas en esta carpeta.</div>');
+    const foot = $("#edNotesFoot");
+    if (!host || !foot) return;
+    if (notesEditing) return;
+
+    if (!root) {
+      foot.innerHTML = "";
+      return (host.innerHTML = '<div class="ed-view-empty">Abre un proyecto para tener notas suyas.</div>');
+    }
+    if (!edNotes.length) {
+      foot.innerHTML = "";
+      return (host.innerHTML = '<div class="ed-view-empty">Sin notas en esta carpeta.</div>');
+    }
 
     host.innerHTML = edNotes
       .map(
         (n) => `
         <div class="ed-note${n.done ? " done" : ""}" data-id="${escapeAttr(n.id)}">
           <input type="checkbox" ${n.done ? "checked" : ""} title="${n.done ? "Desmarcar" : "Marcar como hecha"}" />
-          <span class="ed-note-text">${escapeHtml(n.text)}</span>
+          <span class="ed-note-text" title="Clic para editar">${escapeHtml(n.text)}</span>
           <button class="ed-note-del" title="Borrar">${EdIcons.view("close")}</button>
         </div>`
       )
@@ -882,8 +917,300 @@ const CodeEditor = (() => {
       row.querySelector("input").addEventListener("change", (e) =>
         notesWrite("/api/notes/item", { id, done: e.target.checked })
       );
+      row.querySelector(".ed-note-text").addEventListener("click", () => startNoteEdit(row, id));
       row.querySelector(".ed-note-del").addEventListener("click", () => notesWrite("/api/notes", { id }, "DELETE"));
     });
+
+    const pending = notesPending();
+    const done = edNotes.length - pending;
+    foot.innerHTML =
+      `<span>${pending} pendiente${pending === 1 ? "" : "s"}</span>` +
+      (done
+        ? `<button class="ed-chip" data-notes-clear>Limpiar ${done} hecha${done === 1 ? "" : "s"}</button>`
+        : "");
+  }
+
+  function startNoteEdit(row, id) {
+    const note = edNotes.find((n) => n.id === id);
+    if (!note || notesEditing) return;
+    notesEditing = id;
+
+    const box = document.createElement("textarea");
+    box.className = "ed-note-edit";
+    box.value = note.text;
+    box.rows = Math.min(6, note.text.split("\n").length + 1);
+    row.querySelector(".ed-note-text").replaceWith(box);
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+
+    const close = (save) => {
+      if (notesEditing !== id) return;
+      notesEditing = null;
+      const text = box.value.trim();
+      if (save && text && text !== note.text) notesWrite("/api/notes/item", { id, text });
+      else renderNotesList();
+    };
+    box.addEventListener("blur", () => close(true));
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close(false);
+      } else if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        close(true);
+      }
+    });
+  }
+
+  // ---- Vista: ramas ----
+  // Cambiar de rama aquí mismo o abrir la rama en su propia carpeta (git
+  // worktree). Un worktree es un proyecto más de la lista, así que al abrirlo el
+  // editor no hace nada especial: cambia de raíz como con cualquier carpeta.
+  let branchData = null;
+  let worktreeData = null;
+  let branchBusy = false;
+
+  function renderBranchesView(host) {
+    host.innerHTML =
+      viewHead("RAMAS", [
+        { id: "newBranch", icon: "plus", title: "Crear una rama nueva" },
+        { id: "reload", icon: "reload", title: "Releer las ramas" },
+        { id: "more", icon: "ellipsis", title: "Más" },
+      ]) + '<div class="ed-branches" id="edBranches"></div>';
+
+    host.querySelector('[data-act="newBranch"]').addEventListener("click", createBranchHere);
+    host.querySelector('[data-act="reload"]').addEventListener("click", () => loadBranches({ force: true }));
+    host.querySelector('[data-act="more"]').addEventListener("click", (e) =>
+      openGitMenu(e.currentTarget, [
+        { label: "Crear rama nueva…", icon: EdIcons.view("plus"), onPick: createBranchHere },
+        { label: "Limpiar registros de worktrees", icon: EdIcons.view("trash"), onPick: pruneWorktrees },
+        { separator: "" },
+        { label: "Releer las ramas", icon: EdIcons.view("reload"), onPick: () => loadBranches({ force: true }) },
+      ])
+    );
+
+    renderBranchList();
+    loadBranches();
+  }
+
+  async function loadBranches({ force = false } = {}) {
+    if (!root) {
+      branchData = null;
+      worktreeData = null;
+      return renderBranchList();
+    }
+    if (!force && branchData && branchData.for === root) return;
+    try {
+      const [b, w] = await Promise.all([
+        fetch(`/api/git/branches?path=${encodeURIComponent(root)}`).then((r) => r.json()),
+        fetch(`/api/git/worktrees?path=${encodeURIComponent(root)}`).then((r) => r.json()),
+      ]);
+      branchData = { ...b, for: root };
+      worktreeData = w;
+    } catch (_) {
+      branchData = null;
+      worktreeData = null;
+    }
+    renderBranchList();
+  }
+
+  const branchVar = (name) => (window.BranchColor ? BranchColor.branchColorVar(name) : null);
+
+  function branchDot(name) {
+    const v = branchVar(name);
+    return `<span class="ed-branch-dot" style="background: ${v ? `var(${v})` : "var(--ghost)"}"></span>`;
+  }
+
+  function trackText(b) {
+    const parts = [];
+    if (b.ahead) parts.push(`↑${b.ahead}`);
+    if (b.behind) parts.push(`↓${b.behind}`);
+    if (b.gone) parts.push("sin remota");
+    return parts.join(" ");
+  }
+
+  // Si una rama ya está en un worktree se ofrece "abrir" en vez de "cambiar": git
+  // no deja sacar la misma rama en dos carpetas a la vez. Las carpetas de trabajo
+  // solo se listan si hay más de una o si alguna se perdió.
+  function renderBranchList() {
+    const host = $("#edBranches");
+    if (!host) return;
+    if (!root) return (host.innerHTML = '<div class="ed-view-empty">Abre un proyecto para ver sus ramas.</div>');
+    if (!branchData) return (host.innerHTML = '<div class="ed-view-empty">Leyendo las ramas…</div>');
+    if (!branchData.repo) return (host.innerHTML = '<div class="ed-view-empty">Esta carpeta no está en un repositorio Git.</div>');
+
+    const trees = (worktreeData && worktreeData.worktrees) || [];
+    // Rama -> carpeta donde está sacada: es lo que decide si una rama se abre o
+    // se cambia aquí. git no deja sacar la misma rama en dos worktrees.
+    const byBranch = new Map(trees.filter((w) => w.branch).map((w) => [w.branch, w]));
+    const current = branchData.current;
+
+    const branchRow = (b) => {
+      const tree = byBranch.get(b.name);
+      const here = b.name === current;
+      const track = trackText(b);
+      const acts = here
+        ? '<span class="ed-branch-here">aquí</span>'
+        : tree
+          ? `<button class="ed-chip" data-open="${escapeAttr(tree.path)}">abrir</button>`
+          : `<button class="ed-chip" data-switch="${escapeAttr(b.name)}">cambiar</button>` +
+            `<button class="ed-chip" data-worktree="${escapeAttr(b.name)}" title="Sacar esta rama en una carpeta nueva">+ carpeta</button>`;
+      return (
+        `<div class="ed-branch${here ? " here" : ""}">${branchDot(b.name)}` +
+        `<span class="ed-branch-name" title="${escapeAttr(b.name)}">${escapeHtml(b.name)}</span>` +
+        (track ? `<span class="ed-branch-track">${escapeHtml(track)}</span>` : "") +
+        `<span class="ed-branch-acts">${acts}</span></div>`
+      );
+    };
+
+    const treeRow = (w) => {
+      const name = w.path.split("/").pop();
+      const label = w.branch || (w.detached ? "HEAD suelto" : "sin rama");
+      // La carpeta que se está editando no se ofrece para borrar: primero se abre
+      // otra. Y la que ya no está en el disco solo se puede limpiar (prune).
+      const acts = [
+        w.current
+          ? '<span class="ed-branch-here">abierta</span>'
+          : w.exists === false
+            ? ""
+            : `<button class="ed-chip" data-open="${escapeAttr(w.path)}">abrir</button>`,
+        w.main || w.current ? "" : `<button class="ed-chip danger" data-remove="${escapeAttr(w.path)}">quitar</button>`,
+      ].join("");
+      return (
+        `<div class="ed-branch${w.current ? " here" : ""}">${branchDot(w.branch || "")}` +
+        `<span class="ed-branch-name" title="${escapeAttr(w.path)}">${escapeHtml(name)}` +
+        `<span class="ed-branch-sub">${escapeHtml(label)}${w.prunable ? " · perdida" : ""}${w.main ? " · principal" : ""}</span></span>` +
+        `<span class="ed-branch-acts">${acts}</span></div>`
+      );
+    };
+
+    const remotes = (branchData.remote || []).slice(0, 30);
+
+    host.innerHTML =
+      '<div class="ed-ext-sec">RAMAS LOCALES</div>' +
+      ((branchData.local || []).map(branchRow).join("") || '<div class="ed-view-empty">Todavía no hay ramas.</div>') +
+      (trees.length > 1 || trees.some((w) => w.prunable)
+        ? '<div class="ed-ext-sec">CARPETAS DE TRABAJO</div>' + trees.map(treeRow).join("")
+        : "") +
+      (remotes.length
+        ? '<div class="ed-ext-sec">REMOTAS</div>' +
+          remotes
+            .map(
+              (b) =>
+                `<div class="ed-branch">${branchDot(b.shortName)}` +
+                `<span class="ed-branch-name" title="${escapeAttr(b.name)}">${escapeHtml(b.name)}</span>` +
+                `<span class="ed-branch-acts">` +
+                `<button class="ed-chip" data-track="${escapeAttr(b.name)}">sacar</button>` +
+                `<button class="ed-chip" data-track-worktree="${escapeAttr(b.name)}" title="Sacarla en una carpeta nueva">+ carpeta</button>` +
+                `</span></div>`
+            )
+            .join("")
+        : "");
+
+    host.querySelectorAll("[data-switch]").forEach((btn) =>
+      btn.addEventListener("click", () => switchHere(btn.dataset.switch))
+    );
+    host.querySelectorAll("[data-worktree]").forEach((btn) =>
+      btn.addEventListener("click", () => addWorktree(btn.dataset.worktree))
+    );
+    host.querySelectorAll("[data-track]").forEach((btn) =>
+      btn.addEventListener("click", () => switchHere(btn.dataset.track, { track: true }))
+    );
+    host.querySelectorAll("[data-track-worktree]").forEach((btn) =>
+      btn.addEventListener("click", () => addWorktree(btn.dataset.trackWorktree, { track: true }))
+    );
+    host.querySelectorAll("[data-open]").forEach((btn) =>
+      btn.addEventListener("click", () => openWorktree(btn.dataset.open))
+    );
+    host.querySelectorAll("[data-remove]").forEach((btn) =>
+      btn.addEventListener("click", () => removeWorktree(btn.dataset.remove))
+    );
+  }
+
+  // Una escritura de git a la vez, y lo que responde el servidor es lo que se
+  // enseña: un fallo llega como 200 con {ok:false, summary}.
+  async function gitWrite(url, body, method) {
+    if (branchBusy || !root) return null;
+    branchBusy = true;
+    try {
+      const res = await fetch(url, {
+        method: method || "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: root, ...body }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || `HTTP ${res.status}`);
+        return null;
+      }
+      if (!data.ok) {
+        alert(data.summary || data.output || "git no pudo hacerlo");
+        return null;
+      }
+      return data;
+    } catch (err) {
+      alert(err.message);
+      return null;
+    } finally {
+      branchBusy = false;
+      loadBranches({ force: true });
+    }
+  }
+
+  // Cambia a una rama local o remota. Con track, la rama que llega es la remota y
+  // el servidor crea la local siguiéndola.
+  async function switchHere(branch, { track = false } = {}) {
+    const done = await gitWrite("/api/git/checkout", { branch, track });
+    if (done) {
+      flash(`Rama ${branch}`);
+      loadGitMarks({ force: true });
+    }
+  }
+
+  // Crea una rama y se cambia a ella. Con prompt() porque el panel no tiene
+  // diálogos propios.
+  function createBranchHere() {
+    const name = prompt("Nombre de la rama nueva:");
+    if (name === null) return;
+    const clean = name.trim();
+    if (!clean) return;
+    gitWrite("/api/git/checkout", { branch: clean, create: true }).then((data) => {
+      if (!data) return;
+      flash(`Rama ${clean}`);
+      loadGitMarks({ force: true });
+    });
+  }
+
+  // Saca la rama en una carpeta nueva y se pasa a ella: el servidor ya la dio de
+  // alta en Proyectos, así que el editor la abre como cualquier otro proyecto.
+  async function addWorktree(branch, { track = false } = {}) {
+    const data = await gitWrite("/api/git/worktree", { branch, track });
+    if (!data || !data.worktree) return;
+    flash(`${branch} en ${data.worktree.name}`);
+    await setRoot(data.worktree.path);
+  }
+
+  // La carpeta puede no estar todavía en Proyectos (un worktree hecho a mano):
+  // se da de alta antes, porque el árbol solo lee dentro de las registradas.
+  async function openWorktree(dir) {
+    try {
+      await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: dir }),
+      });
+    } catch (_) {}
+    await setRoot(dir);
+  }
+
+  async function removeWorktree(dir) {
+    if (!confirm(`Se borra la carpeta ${dir} del disco.\n\nLa rama y sus commits se quedan. ¿Seguir?`)) return;
+    const data = await gitWrite("/api/git/worktree", { target: dir }, "DELETE");
+    if (data) flash(`Quitada ${dir.split("/").pop()}`);
+  }
+
+  function pruneWorktrees() {
+    gitWrite("/api/git/worktree/prune", {});
   }
 
   // ---- Vista: extensiones ----
@@ -962,6 +1289,8 @@ const CodeEditor = (() => {
     if (!root) {
       gitMarks = new Map();
       gitDirs = new Map();
+      gitState = null;
+      gitSig = "";
       return;
     }
     if (!force && gitRoot === root && gitMarks.size) return;
@@ -969,23 +1298,74 @@ const CodeEditor = (() => {
       const res = await fetch(`/api/git?path=${encodeURIComponent(root)}`);
       if (!res.ok) return;
       const data = await res.json();
+      const before = gitState;
       gitRoot = root;
+      gitState = {
+        repo: !!data.repo,
+        root: data.root || null,
+        branch: data.branch || null,
+        detached: !!data.detached,
+        ahead: data.ahead || 0,
+        behind: data.behind || 0,
+      };
+
+      const touched = data.files || [];
+      // El sondeo pregunta cada pocos segundos: si nada cambió no se toca el DOM,
+      // que se llevaría por delante el scroll del árbol.
+      const sig = [gitState.branch, gitState.detached, ...touched.map((f) => `${f.path}${f.letter}${f.staged ? 1 : 0}`)].join("|");
+      const changed = sig !== gitSig;
+      gitSig = sig;
+
       gitMarks = new Map();
       gitDirs = new Map();
-      if (!data.repo || !data.root) return renderTree();
-      (data.files || []).forEach((f) => {
-        const abs = `${data.root}/${f.path}`;
-        gitMarks.set(abs, f);
-        let dir = dirName(abs);
-        while (dir && dir.length >= root.length) {
-          gitDirs.set(dir, (gitDirs.get(dir) || 0) + 1);
-          dir = dirName(dir);
-        }
-      });
-      renderTree();
+      if (data.repo && data.root) {
+        touched.forEach((f) => {
+          const abs = `${data.root}/${f.path}`;
+          gitMarks.set(abs, f);
+          let dir = dirName(abs);
+          while (dir && dir.length >= root.length) {
+            gitDirs.set(dir, (gitDirs.get(dir) || 0) + 1);
+            dir = dirName(dir);
+          }
+        });
+      }
+
+      const switched = before && before.root === gitState.root && before.branch !== gitState.branch;
+      if (changed) {
+        renderTree();
+        renderStatus();
+        if (view === "branches") loadBranches({ force: true });
+      }
+      if (switched) onBranchSwitched(gitState.branch);
     } catch (_) {
       // el servidor puede estar reiniciándose: se reintenta al siguiente evento
     }
+  }
+
+  // Cambiar de rama reescribe el disco: el árbol se relee conservando lo que
+  // estaba desplegado, los archivos abiertos se recargan y los que no existen en
+  // la rama nueva se cierran si no tenían cambios.
+  async function onBranchSwitched(branch) {
+    flash(`Rama ${branch || "suelta"}: recargando`);
+    await refreshOpenDirs();
+    await checkExternalChanges({ closeMissing: true });
+    renderTabs();
+    renderCrumbs();
+    renderStatus();
+  }
+
+  async function refreshOpenDirs() {
+    if (!root) return;
+    const open = [root, ...expanded];
+    dirs.clear();
+    for (const dir of open) {
+      try {
+        await loadDir(dir);
+      } catch (_) {
+        expanded.delete(dir);
+      }
+    }
+    renderTree();
   }
 
   async function toggleDir(dir) {
@@ -1215,7 +1595,14 @@ const CodeEditor = (() => {
     const fmt = formatter();
     const host = $("#edStatus");
 
+    const branch = gitState && gitState.repo ? (gitState.detached ? "HEAD suelto" : gitState.branch || "sin rama") : "";
+    const track = gitState ? [gitState.ahead ? `↑${gitState.ahead}` : "", gitState.behind ? `↓${gitState.behind}` : ""].filter(Boolean).join(" ") : "";
+
     host.innerHTML =
+      (branch
+        ? `<button class="ed-status-item act ed-status-branch" data-branch title="Cambiar de rama">` +
+          `${EdIcons.view("git")}<span>${escapeHtml(branch)}</span>${track ? `<span class="ed-status-track">${escapeHtml(track)}</span>` : ""}</button>`
+        : "") +
       `<button class="ed-status-item act" data-problems title="Problemas del archivo">${escapeHtml(counts)}</button>` +
       (activePath && linters().length
         ? `<button class="ed-status-item act" data-lint${linting ? " disabled" : ""}>${linting ? "revisando…" : "revisar"}</button>`
@@ -1229,10 +1616,28 @@ const CodeEditor = (() => {
       `<span class="ed-status-item">Espacios: 2</span>` +
       `<span class="ed-status-item">${escapeHtml(lang)}</span>`;
 
+    host.querySelector("[data-branch]")?.addEventListener("click", (e) => openStatusBranchMenu(e.currentTarget));
     host.querySelector("[data-save]").addEventListener("click", () => save());
     host.querySelector("[data-problems]").addEventListener("click", () => setProblemsOpen(!problemsOpen));
     host.querySelector("[data-lint]")?.addEventListener("click", () => runLinters());
     host.querySelector("[data-format]")?.addEventListener("click", () => formatActive());
+  }
+
+  // El menú rápido de la barra: las ramas recientes y la vista entera. Usa el
+  // mismo menú flotante que la tarjeta de Git.
+  async function openStatusBranchMenu(anchor) {
+    await loadBranches();
+    const local = (branchData && branchData.local) || [];
+    const items = local.slice(0, 8).map((b) => ({
+      label: b.name,
+      hint: trackText(b),
+      checked: b.current,
+      onPick: () => (b.current ? null : switchHere(b.name)),
+    }));
+    if (items.length) items.push({ separator: "" });
+    items.push({ label: "Crear rama nueva…", icon: EdIcons.view("plus"), onPick: createBranchHere });
+    items.push({ label: "Ver todas las ramas", icon: EdIcons.view("git"), onPick: () => pickView("branches") });
+    openGitMenu(anchor, items);
   }
 
   function flash(text) {
@@ -1435,10 +1840,25 @@ const CodeEditor = (() => {
   // solo. Si lo has tocado, no se pisa: se avisa y decides tú.
   function startWatching() {
     if (watchTimer) return;
-    watchTimer = setInterval(checkExternalChanges, 3000);
+    watchTimer = setInterval(() => {
+      checkExternalChanges();
+      pollGit();
+    }, 3000);
   }
 
-  async function checkExternalChanges() {
+  // La rama también cambia por fuera del panel (la terminal, Claude Code) y eso
+  // no emite ningún evento: la única forma de enterarse es volver a preguntar.
+  // Solo mientras el editor está delante, como hace la tarjeta de Git.
+  let lastGitPoll = 0;
+
+  function pollGit() {
+    if (!root || document.hidden || !document.querySelector("#tab-editor.active")) return;
+    if (Date.now() - lastGitPoll < GIT_POLL_MS) return;
+    lastGitPoll = Date.now();
+    loadGitMarks({ force: true });
+  }
+
+  async function checkExternalChanges({ closeMissing = false } = {}) {
     const paths = [...files.keys()];
     if (!paths.length || document.hidden) return;
 
@@ -1451,7 +1871,18 @@ const CodeEditor = (() => {
       if (!res.ok) return;
       for (const row of await res.json()) {
         const entry = files.get(row.path);
-        if (!entry || row.missing || row.mtimeMs === entry.mtimeMs) continue;
+        if (!entry) continue;
+        if (row.missing) {
+          if (!closeMissing) continue;
+          if (entry.saved) {
+            closeFile(row.path);
+            flash(`${baseName(row.path)} no está en esta rama`);
+          } else {
+            flash(`${baseName(row.path)} no está en esta rama y tienes cambios sin guardar`);
+          }
+          continue;
+        }
+        if (row.mtimeMs === entry.mtimeMs) continue;
         if (!entry.saved) {
           flash(`${baseName(row.path)} cambió en disco y tienes cambios sin guardar`);
           entry.mtimeMs = row.mtimeMs;
@@ -1466,7 +1897,7 @@ const CodeEditor = (() => {
         model.pushStackElement();
         entry.mtimeMs = data.mtimeMs;
         entry.saved = true;
-        flash(`${baseName(row.path)} se recargó: lo cambió Claude Code`);
+        flash(`${baseName(row.path)} se recargó: ${closeMissing ? "cambió la rama" : "lo cambió Claude Code"}`);
         renderTabs();
       }
     } catch (_) {
@@ -1509,8 +1940,13 @@ const CodeEditor = (() => {
     }
     renderTree();
     renderProjectPicker();
+    gitState = null;
+    gitSig = "";
+    branchData = null;
+    worktreeData = null;
     loadGitMarks({ force: true });
-    if (view === "notes") loadNotes();
+    loadNotes();
+    if (view === "branches") loadBranches({ force: true });
     if (view === "search") runSearch();
     toolsFor = null;
     loadTools();
@@ -1538,10 +1974,11 @@ const CodeEditor = (() => {
     renderCrumbs();
     renderProblems();
     loadTools();
+    startWatching();
     EdExtensions.init();
   }
 
-  const SHORTCUTS = { e: "explorer", f: "search", n: "notes", x: "extensions", m: "map" };
+  const SHORTCUTS = { e: "explorer", f: "search", b: "branches", n: "notes", x: "extensions", m: "map" };
 
   window.addEventListener("keydown", (e) => {
     if (!document.querySelector("#tab-editor.active")) return;
@@ -1563,6 +2000,9 @@ const CodeEditor = (() => {
   // Claude Code y la terminal cambian archivos por fuera del panel: el mismo
   // evento que refresca la tarjeta de Git repinta las letras del árbol.
   window.addEventListener("ed:git-changed", () => loadGitMarks({ force: true }));
+  window.addEventListener("ed:notes-changed", (e) => {
+    if (root && e.detail && e.detail.path === root) loadNotes();
+  });
 
   const refreshIcons = () => {
     renderTree();
