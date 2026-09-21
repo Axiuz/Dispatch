@@ -36,14 +36,29 @@ const SECURITY_CASES = [
   { label: "Origin ajeno", path: "/api/status", headers: { Origin: "http://evil.example" }, expect: 403 },
 ];
 
+// Verifica si el directorio es la raíz del repositorio mediante la existencia de build-dmg.sh en Scripts y de orquestador-agentes/test.
+function isRepoRoot(dir) {
+  return (
+    fs.existsSync(path.join(dir, "Scripts", "build-dmg.sh")) &&
+    fs.existsSync(path.join(dir, "orquestador-agentes", "test"))
+  );
+}
+
 // Corriendo desde el repositorio hay tests que correr y una app que recompilar;
 // dentro del bundle de la app no existe ninguna de las dos cosas, y eso se nota
 // por lo que hay un nivel más arriba.
+// Busca la raíz del repositorio a partir del appRoot: primero intenta con el padre, luego lee un archivo repo-root si existe, y valida que sea una raíz válida.
+// La ruta de repo-root decide qué build-dmg.sh se ejecuta: si no es absoluta o el repo se movió, se trata como bundle suelto.
 function repoRootFrom(appRoot) {
   const up = path.resolve(appRoot, "..");
-  const conScripts = fs.existsSync(path.join(up, "Scripts", "build-dmg.sh"));
-  const conTests = fs.existsSync(path.join(appRoot, "test"));
-  return conScripts && conTests ? up : null;
+  if (fs.existsSync(path.join(up, "Scripts", "build-dmg.sh")) && fs.existsSync(path.join(appRoot, "test"))) return up;
+  let marcado = "";
+  try {
+    marcado = fs.readFileSync(path.join(appRoot, "repo-root"), "utf8").trim();
+  } catch {
+    return null;
+  }
+  return path.isAbsolute(marcado) && isRepoRoot(marcado) ? marcado : null;
 }
 
 // Una petición al servidor por su puerto de verdad, con tope de espera. Devuelve
@@ -215,10 +230,16 @@ const STEPS = [
     label: "Tests unitarios",
     hint: "node --test sobre test/",
     async run(ctx) {
-      const dir = path.join(ctx.appRoot, "test");
-      if (!fs.existsSync(dir)) return skip("la app empaquetada no lleva los tests");
+      // Si el bundle tiene un directorio test/, se usa el appRoot como origen; si no, se busca en repoRoot (si está definido) para ejecutar los tests del repositorio.
+      const src = fs.existsSync(path.join(ctx.appRoot, "test"))
+        ? ctx.appRoot
+        : ctx.repoRoot
+          ? path.join(ctx.repoRoot, "orquestador-agentes")
+          : null;
+      const dir = src && path.join(src, "test");
+      if (!dir || !fs.existsSync(dir)) return skip("la app empaquetada no lleva los tests");
       const archivos = fs.readdirSync(dir).filter((f) => f.endsWith(".test.js")).map((f) => path.join("test", f));
-      const res = await exec(process.execPath, ["--test", ...archivos], { cwd: ctx.appRoot, timeoutMs: 180000 });
+      const res = await exec(process.execPath, ["--test", ...archivos], { cwd: src, timeoutMs: 180000 });
       const cuenta = (etiqueta) => {
         const m = res.output.match(new RegExp(`^[#ℹ] ${etiqueta} (\\d+)$`, "m"));
         return m ? Number(m[1]) : null;

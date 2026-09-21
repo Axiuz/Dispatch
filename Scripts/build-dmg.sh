@@ -83,6 +83,8 @@ fi
 # Solo los valores por defecto: projects.json lleva rutas reales y no viaja en la app
 mkdir -p "$RES/app/data"
 cp "$SRC/data/agents.json" "$SRC/data/config.json" "$RES/app/data/"
+# Guarda la ruta del repositorio original en el bundle para que el botón de rebuild funcione desde dentro de la app.
+printf '%s\n' "$ROOT" >"$RES/app/repo-root"
 # node_modules plano (sin symlinks de pnpm) para que viaje bien dentro del bundle
 (cd "$RES/app" && pnpm install --prod --frozen-lockfile --config.node-linker=hoisted --silent)
 # node-pty 1.1.0 no marca spawn-helper como ejecutable; sin eso la terminal no abre

@@ -106,3 +106,46 @@ test("sin la carpeta test no hay repositorio: es el bundle de la app", () => {
   fs.writeFileSync(path.join(root, "Scripts", "build-dmg.sh"), "#!/bin/bash\n");
   assert.equal(repoRootFrom(app), null);
 });
+
+function fakeRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "debug-repo-"));
+  fs.mkdirSync(path.join(root, "orquestador-agentes", "test"), { recursive: true });
+  fs.mkdirSync(path.join(root, "Scripts"), { recursive: true });
+  fs.writeFileSync(path.join(root, "Scripts", "build-dmg.sh"), "#!/bin/bash\n");
+  return root;
+}
+
+function fakeBundle(marca) {
+  const res = fs.mkdtempSync(path.join(os.tmpdir(), "debug-bundle-"));
+  const app = path.join(res, "app");
+  fs.mkdirSync(app, { recursive: true });
+  if (marca !== undefined) fs.writeFileSync(path.join(app, "repo-root"), marca);
+  return app;
+}
+
+test("desde el bundle, repo-root apunta a un repositorio válido", () => {
+  const root = fakeRepo();
+  assert.equal(repoRootFrom(fakeBundle(root)), root);
+});
+
+test("repo-root se recorta: espacios y salto de línea no estorban", () => {
+  const root = fakeRepo();
+  assert.equal(repoRootFrom(fakeBundle(`  ${root}\n`)), root);
+});
+
+test("repo-root con ruta relativa no cuenta", () => {
+  assert.equal(repoRootFrom(fakeBundle("orquestador-agentes")), null);
+});
+
+test("repo-root que apunta a algo que no es el repositorio no cuenta", () => {
+  const sinScript = fakeRepo();
+  fs.unlinkSync(path.join(sinScript, "Scripts", "build-dmg.sh"));
+  assert.equal(repoRootFrom(fakeBundle(sinScript)), null);
+  const sinTests = fakeRepo();
+  fs.rmSync(path.join(sinTests, "orquestador-agentes", "test"), { recursive: true });
+  assert.equal(repoRootFrom(fakeBundle(sinTests)), null);
+});
+
+test("bundle sin repo-root: no hay repositorio a mano", () => {
+  assert.equal(repoRootFrom(fakeBundle()), null);
+});
