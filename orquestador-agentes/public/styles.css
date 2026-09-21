@@ -11,6 +11,7 @@
   --bg: #0a0a0a;
   --rail: #111111;
   --sunken: #0d0d0d;
+  --editor-bg: #0d0d0d;
   --panel: #171717;
   --panel-active: #1f1f1f;
   --panel-2: #222222;
@@ -841,7 +842,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .session-actions { margin-left: auto; display: flex; gap: 8px; flex: none; }
 
 .terminal-host {
-  flex: 1; min-height: 0; background: var(--sunken); border: 1px solid var(--border-soft);
+  flex: 1; min-height: 0; background: var(--editor-bg); border: 1px solid var(--border-soft);
   border-radius: 9px; padding: 10px 4px 4px 12px; overflow: hidden;
 }
 .terminal-host .xterm { height: 100%; }
@@ -896,6 +897,27 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .toggle input:checked + .track { background: var(--green-track); }
 .toggle input:checked + .track::after { left: 13px; background: var(--green); }
 .toggle input:checked ~ .tlabel { color: var(--green); }
+
+/* Estilo del slider de rango: sin el estilo predeterminado del navegador, con la
+   pista y el pulgar sacados de las variables de :root. */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none; flex: 1; min-width: 0;
+  height: 4px; border-radius: 2px; background: var(--panel-3); cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--accent); border: 0; cursor: pointer;
+}
+input[type="range"]:disabled { opacity: 0.45; cursor: default; }
+input[type="range"]:disabled::-webkit-slider-thumb { background: var(--ghost); cursor: default; }
+
+.veil-sliders { display: flex; flex-direction: column; gap: 8px; }
+.veil-row { display: flex; align-items: center; gap: 10px; }
+.veil-name {
+  flex: none; width: 66px; font-size: 10.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.veil-pct { flex: none; width: 34px; text-align: right; color: var(--faint); }
 
 /* ---------- Consola y Conexión ---------- */
 .split { display: flex; gap: 16px; flex: 1; min-height: 0; }
@@ -1281,7 +1303,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   font-size: 12px; color: var(--muted); white-space: nowrap; position: relative;
 }
 .ed-tab:hover { background: var(--panel); }
-.ed-tab.active { background: var(--sunken); color: var(--text); }
+.ed-tab.active { background: var(--editor-bg); color: var(--text); }
 .ed-tab.active::after {
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: var(--accent);
 }
@@ -1296,7 +1318,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 
 .ed-crumbs {
   display: flex; align-items: center; gap: 2px; flex: none; overflow-x: auto;
-  padding: 4px 10px; font-size: 11px; color: var(--faint); background: var(--sunken);
+  padding: 4px 10px; font-size: 11px; color: var(--faint); background: var(--editor-bg);
   scrollbar-width: none; white-space: nowrap;
 }
 .ed-crumbs::-webkit-scrollbar { display: none; }
@@ -1310,10 +1332,10 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .ed-crumb-sep { display: grid; place-items: center; color: var(--border-strong); }
 .ed-crumb-sep .ed-ico { width: 11px; height: 11px; }
 
-.ed-host { flex: 1; min-height: 0; background: var(--sunken); overflow: hidden; }
+.ed-host { flex: 1; min-height: 0; background: var(--editor-bg); overflow: hidden; }
 .ed-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 8px; text-align: center; padding: 30px; background: var(--sunken);
+  gap: 8px; text-align: center; padding: 30px; background: var(--editor-bg);
 }
 
 .ed-status {
@@ -1506,3 +1528,16 @@ button.ed-status-branch { display: flex; align-items: center; gap: 4px; }
 /* Aviso de "sin plan" cuando el tablero ya se ve debajo: ocupa menos */
 .plan-empty.slim { padding: 12px 14px; gap: 6px; text-align: left; align-items: flex-start; }
 .plan-empty.slim .plan-empty-text { max-width: none; }
+
+/* Hace que el fondo del html sea transparente cuando está activo el efecto translúcido:
+   si no tuviera fondo propio, el navegador subiría el del body al lienzo y el panel
+   no dejaría ver el material de la ventana. */
+html[data-veil] { background: transparent; }
+/* Aplica el fondo --rail a ed-tab, ed-problems y git-dot, que pintaban con --bg —la
+   superficie más transparente— y dejarían ver el escritorio; va con :where() para
+   mantener la especificidad baja y que .active y :hover sigan ganando. */
+html[data-veil] :where(.ed-tab, .ed-problems, .git-dot) { background: var(--rail); }
+/* Aplica un desenfoque al menú flotante y al modal para que el texto que está debajo
+   no estorbe al leerlos. */
+html[data-veil] .float-menu,
+html[data-veil] .modal-card { backdrop-filter: blur(12px); }

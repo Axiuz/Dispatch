@@ -73,6 +73,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
     webView = WKWebView(frame: .zero, configuration: config)
     webView.customUserAgent = appUserAgent
     webView.uiDelegate = self
+    // Desactiva el fondo del WebView para que no pinte opaco y se vea el material de fondo traslúcido definido por CSS
+    webView.setValue(false, forKey: "drawsBackground")
+    if #available(macOS 12.0, *) { webView.underPageBackgroundColor = .clear }
+
+    let backdrop = NSVisualEffectView()
+    backdrop.material = .underWindowBackground
+    backdrop.blendingMode = .behindWindow
+    // El estado activo mantiene el desenfoque incluso cuando la ventana no es la del frente, para mantener consistencia visual
+    backdrop.state = .active
+    webView.autoresizingMask = [.width, .height]
+    backdrop.addSubview(webView)
 
     window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
@@ -81,7 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
     window.title = "Singularity"
     // Tres columnas (proyectos, centro, agentes) no caben en menos
     window.minSize = NSSize(width: 1000, height: 620)
-    window.contentView = webView
+    // Sin fullSizeContentView: la barra de título ya sale translúcida sola y así el panel no se mete debajo de los semáforos
+    window.appearance = NSAppearance(named: .darkAqua)
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.contentView = backdrop
+    webView.frame = backdrop.bounds
     window.center()
     window.setFrameAutosaveName("SingularityMain")
     window.makeKeyAndOrderFront(nil)
@@ -90,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
 
   func showStatus(_ text: String) {
     webView.loadHTMLString("""
-      <body style="margin:0;height:100vh;display:grid;place-items:center;background:#0a0a0a;
+      <body style="margin:0;height:100vh;display:grid;place-items:center;background:transparent;
       color:#a2a29a;font:14px -apple-system,system-ui">\(text)</body>
       """, baseURL: nil)
   }
