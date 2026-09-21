@@ -1653,6 +1653,41 @@ app.post("/api/git/init", async (req, res) => {
   await gitWrite(dir, await gitinfo.initRepo(dir, { branch }), res);
 });
 
+// Clona un repositorio en una carpeta del usuario. La carpeta padre pasa por insideHome porque
+// clonar escribe fuera de las carpetas ya registradas en Proyectos, igual que crear un proyecto nuevo.
+// Si git falla se responde 200 con ok:false y su texto literal, que es la convención del resto de
+// Git aquí; el 4xx queda para lo que ni llega a git. En ese caso se borra la carpeta de destino:
+// git la limpia solo si aborta él mismo, no si lo matamos por timeout, y una carpeta a medias
+// haría que el siguiente intento chocara con el 409.
+app.post("/api/git/clone", async (req, res) => {
+  const parent = safepath.insideHome(req.body.parent);
+  if (!parent || !isDirectory(parent)) {
+    return res.status(403).json({ error: "La carpeta donde clonar tiene que ser una carpeta tuya dentro de " + os.homedir() });
+  }
+
+  const badUrl = gitinfo.remoteUrlError(req.body.url);
+  if (badUrl) return res.status(400).json({ error: badUrl });
+
+  const name = String(req.body.name || "").trim() || gitinfo.cloneNameFromUrl(req.body.url) || "";
+  const badName = safepath.entryNameError(name);
+  if (badName) return res.status(400).json({ error: badName });
+
+  const dir = path.join(parent, name);
+  if (fs.existsSync(dir)) return res.status(409).json({ error: "Ya existe algo con ese nombre" });
+
+  const result = await gitinfo.clone(parent, { url: req.body.url, name, branch: req.body.branch });
+
+  if (!result.ok) {
+    try {
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    } catch (_) {}
+    return res.json({ ok: false, output: result.output });
+  }
+
+  touchProject(dir);
+  res.json({ ok: true, output: result.output, project: projectView(projects.find((p) => p.path === dir)) });
+});
+
 app.post("/api/git/remote-set", async (req, res) => {
   const dir = gitDirOf(req, res);
   if (!dir) return;
