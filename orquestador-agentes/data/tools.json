@@ -1,0 +1,147 @@
+{
+  "tools": [
+    {
+      "id": "eslint",
+      "name": "ESLint",
+      "kind": "lint",
+      "bin": "eslint",
+      "args": [
+        "--format",
+        "json",
+        "{file}"
+      ],
+      "match": [
+        "*.js",
+        "*.jsx",
+        "*.mjs",
+        "*.cjs",
+        "*.ts",
+        "*.tsx"
+      ],
+      "parser": "eslint-json",
+      "description": "Errores y avisos de estilo en JavaScript y TypeScript"
+    },
+    {
+      "id": "prettier",
+      "name": "Prettier",
+      "kind": "format",
+      "bin": "prettier",
+      "args": [
+        "--stdin-filepath",
+        "{file}"
+      ],
+      "stdin": true,
+      "match": [
+        "*.js",
+        "*.ts",
+        "*.json",
+        "*.css",
+        "*.html",
+        "*.md",
+        "*.yaml",
+        "*.yml"
+      ],
+      "parser": "none",
+      "description": "Formatea el archivo abierto"
+    },
+    {
+      "id": "tsc",
+      "name": "TypeScript",
+      "kind": "lint",
+      "bin": "tsc",
+      "args": [
+        "--noEmit",
+        "--pretty",
+        "false"
+      ],
+      "match": [
+        "*.ts",
+        "*.tsx"
+      ],
+      "parser": "tsc",
+      "description": "Valida tipos en archivos TypeScript",
+      "projectWide": true
+    },
+    {
+      "id": "ruff",
+      "name": "Ruff",
+      "kind": "lint",
+      "bin": "ruff",
+      "args": [
+        "check",
+        "--output-format",
+        "json",
+        "{file}"
+      ],
+      "match": [
+        "*.py"
+      ],
+      "parser": "ruff-json",
+      "description": "Analiza código Python para errores y estilo"
+    },
+    {
+      "id": "black",
+      "name": "Black",
+      "kind": "format",
+      "bin": "black",
+      "args": [
+        "-",
+        "--quiet",
+        "--stdin-filename",
+        "{file}"
+      ],
+      "stdin": true,
+      "match": [
+        "*.py"
+      ],
+      "parser": "none",
+      "description": "Formatea archivos Python automáticamente"
+    },
+    {
+      "id": "pytest",
+      "name": "Pytest",
+      "kind": "lint",
+      "bin": "pytest",
+      "args": [
+        "-q",
+        "--no-header"
+      ],
+      "match": [
+        "*.py"
+      ],
+      "parser": "generic",
+      "description": "Ejecuta pruebas unitarias en Python",
+      "projectWide": true
+    },
+    {
+      "id": "gofmt",
+      "name": "gofmt",
+      "kind": "format",
+      "bin": "gofmt",
+      "args": [],
+      "stdin": true,
+      "match": [
+        "*.go"
+      ],
+      "parser": "none",
+      "description": "Formatea código Go automáticamente"
+    },
+    {
+      "id": "shellcheck",
+      "name": "ShellCheck",
+      "kind": "lint",
+      "bin": "shellcheck",
+      "args": [
+        "--format",
+        "gcc",
+        "{file}"
+      ],
+      "match": [
+        "*.sh",
+        "*.bash"
+      ],
+      "parser": "generic",
+      "description": "Analiza scripts shell para errores y malas prácticas"
+    }
+  ]
+}

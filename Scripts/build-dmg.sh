@@ -14,8 +14,10 @@ FINAL="$DIST/Singularity.app"
 VERSION="$(node -p "require('$SRC/package.json').version")"
 DMG="$DIST/Singularity-$VERSION.dmg"
 
+# Restos de un build anterior que se cortó a medias: sin esto el .anterior de
+# aquella vez se queda ocupando el disco y confunde sobre cuál app es la buena.
 echo "→ Compilando Singularity.app $VERSION"
-rm -rf "$WORK"
+rm -rf "$WORK" "$DIST/Singularity.app.anterior"
 mkdir -p "$WORK"
 RES="$APP/Contents/Resources"
 mkdir -p "$APP/Contents/MacOS" "$RES"
@@ -82,7 +84,18 @@ if [ -n "$missing" ]; then
 fi
 # Solo los valores por defecto: projects.json lleva rutas reales y no viaja en la app
 mkdir -p "$RES/app/data"
-cp "$SRC/data/agents.json" "$SRC/data/config.json" "$RES/app/data/"
+cp "$SRC/data/agents.json" "$SRC/data/config.json" "$SRC/data/tools.json" "$RES/app/data/"
+# La misma red que la de los módulos, para los datos: un archivo de data que el
+# servidor espera y que no viajó en el bundle sale como un crash al arrancar la
+# app, no como un build en rojo. Aquí se ve antes.
+faltan=""
+for dato in agents.json config.json tools.json; do
+  [ -f "$RES/app/data/$dato" ] || faltan="$faltan $dato"
+done
+if [ -n "$faltan" ]; then
+  echo "Faltan datos en el bundle:$faltan" >&2
+  exit 1
+fi
 # Guarda la ruta del repositorio original en el bundle para que el botón de rebuild funcione desde dentro de la app.
 printf '%s\n' "$ROOT" >"$RES/app/repo-root"
 # node_modules plano (sin symlinks de pnpm) para que viaje bien dentro del bundle
@@ -109,6 +122,10 @@ rm -rf "$VIEJA"
 if [ -d "$FINAL" ]; then mv "$FINAL" "$VIEJA"; fi
 mv "$APP" "$FINAL"
 rm -rf "$VIEJA" "$WORK"
+
+# Solo queda la app nueva y su .dmg: los de versiones anteriores pesan 65 MB cada
+# uno y no hay forma de saber desde fuera cuál corresponde a la app instalada.
+find "$DIST" -maxdepth 1 -name 'Singularity-*.dmg' ! -name "$(basename "$DMG")" -exec rm -f {} +
 
 echo "✓ $DMG"
 echo "✓ $FINAL"
