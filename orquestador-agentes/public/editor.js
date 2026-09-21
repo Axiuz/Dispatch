@@ -272,6 +272,41 @@ const CodeEditor = (() => {
     return (ext && langIndex.byExt.get(ext)) || UNKNOWN_KIND.lang;
   }
 
+  // ---- Familias de icono ----
+  // El icono del árbol sale del icon theme si hay uno instalado; si no, de esta
+  // familia, y si tampoco, del monograma de FILE_KINDS.
+  const FAMILIES = {
+    image: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "icns", "svg", "tiff"],
+    media: ["mp4", "mov", "webm", "mkv", "avi", "mp3", "wav", "flac", "ogg", "m4a"],
+    font: ["woff", "woff2", "ttf", "otf", "eot"],
+    archive: ["zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "vsix"],
+    lock: ["lock", "pem", "key", "crt", "cer", "p12"],
+    git: ["gitignore", "gitattributes", "gitmodules", "gitkeep"],
+    docker: ["dockerfile", "dockerignore"],
+    env: ["env"],
+    db: ["sql", "sqlite", "db", "mysql", "pgsql", "prisma"],
+    binary: ["wasm", "bin", "exe", "dylib", "so", "o", "a", "class", "pyc"],
+    text: ["txt", "log", "csv", "tsv", "rtf"],
+  };
+
+  const FAMILY_BY_KEY = new Map();
+  Object.entries(FAMILIES).forEach(([family, keys]) => keys.forEach((k) => FAMILY_BY_KEY.set(k, family)));
+
+  function iconFor(name) {
+    const key = kindKey(name);
+    const themed = window.EdExtensions?.fileIcon?.(name, key);
+    if (themed) return themed;
+    const family = FAMILY_BY_KEY.get(key);
+    const drawn = family && EdIcons.file(family);
+    if (drawn) return drawn;
+    return EdIcons.doc(kindFor(name).icon);
+  }
+
+  function dirIcon(open) {
+    const themed = window.EdExtensions?.folderIcon?.(open);
+    return themed || EdIcons.view(open ? "folderOpen" : "folder");
+  }
+
   // ---- Estado ----
   let monaco = null;
   let monacoPromise = null;
@@ -283,10 +318,39 @@ const CodeEditor = (() => {
   let activePath = null;
   let selectedDir = null;
   let watchTimer = null;
+  let cursor = { line: 1, column: 1 };
+
+  // Estado de git por archivo, para las letras del árbol. Sale de /api/git, que
+  // ya lo calcula para la tarjeta del carril derecho.
+  let gitMarks = new Map(); // ruta absoluta -> {letter, kind, staged}
+  let gitDirs = new Map(); // carpeta -> cuántos archivos cambiados cuelgan de ella
+  let gitRoot = null;
+
+  const DEFAULT_PINNED = ["explorer", "search", "notes", "extensions"];
+  let pinned = readStore("ed.pinned", DEFAULT_PINNED);
+  let view = readStore("ed.view", "explorer");
+  let sideOpen = readStore("ed.side", true);
 
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const baseName = (p) => p.split("/").pop();
+  const dirName = (p) => p.slice(0, p.lastIndexOf("/"));
 
+  function readStore(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? fallback : JSON.parse(raw);
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function writeStore(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (_) {
+      // navegación privada o almacenamiento lleno: la preferencia se pierde y ya
+    }
+  }
   // ---- Carga de Monaco ----
   // El loader AMD se trae de /vendor/monaco, que es min/vs tal cual viene en
   // node_modules. Los workers se arrancan con ese mismo loader desde un blob.
@@ -408,6 +472,7 @@ const CodeEditor = (() => {
     monaco.editor.setTheme("dispatch");
   }
 
+
   async function ensureEditor() {
     if (editor) return editor;
     monaco = await loadMonaco();
@@ -423,11 +488,412 @@ const CodeEditor = (() => {
       renderWhitespace: "selection",
       bracketPairColorization: { enabled: true },
       guides: { bracketPairs: true, indentation: true },
+      smoothScrolling: true,
+      cursorBlinking: "smooth",
+      padding: { top: 8 },
       tabSize: 2,
       theme: "dispatch",
     });
+    if (vsixTheme) applyTheme(vsixTheme);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => save());
+    editor.onDidChangeCursorPosition((e) => {
+      cursor = { line: e.position.lineNumber, column: e.position.column };
+      updateCursor();
+    });
     return editor;
+  }
+
+  // Un tema de extensión pisa al de la app mientras esté activo; sin tema
+  // vuelve "dispatch", que sale de las variables de :root.
+  let vsixTheme = null;
+
+  function applyTheme(def) {
+    vsixTheme = def;
+    if (!monaco) return;
+    if (!def) return monaco.editor.setTheme("dispatch");
+    monaco.editor.defineTheme("vsix", { base: def.base || "vs-dark", inherit: true, rules: def.rules || [], colors: def.colors || {} });
+    monaco.editor.setTheme("vsix");
+  }
+
+  // El cursor se mueve con cada tecla: se parchea su hueco en vez de repintar la
+  // barra entera, como hace el timeline con el streaming de un run.
+  function updateCursor() {
+    const slot = document.querySelector(".ed-status-cursor");
+    if (slot) slot.textContent = `Ln ${cursor.line}, Col ${cursor.column}`;
+    else renderStatus();
+  }
+  // ---- Vistas del carril ----
+  // Cada vista pinta dentro de #edView. La barra de arriba enseña las fijadas y
+  // el chevron abre el resto; lo que no está fijado sigue siendo alcanzable.
+  const VIEWS = [
+    { id: "explorer", label: "Explorador", shortcut: "⇧⌘E", render: renderExplorer },
+    { id: "search", label: "Buscar", shortcut: "⇧⌘F", render: renderSearchView },
+    { id: "notes", label: "Notas", shortcut: "⇧⌘N", render: renderNotesView },
+    { id: "extensions", label: "Extensiones", shortcut: "⇧⌘X", render: renderExtensionsView },
+    { id: "map", label: "Mapa de código", shortcut: "⇧⌘M", action: () => showTab("mapa") },
+  ];
+
+  const viewById = (id) => VIEWS.find((v) => v.id === id) || VIEWS[0];
+
+  // Pinta en la barra las vistas fijadas; el chevron abre el resto. Lo fijado es
+  // una preferencia del usuario, así que vive en localStorage y no en el servidor.
+  function renderActivity() {
+    const host = $("#edActivity");
+    const shown = VIEWS.filter((v) => pinned.includes(v.id));
+    host.innerHTML =
+      shown
+        .map(
+          (v) =>
+            `<button class="ed-act${v.id === view && sideOpen ? " active" : ""}" data-view="${v.id}" ` +
+            `title="${escapeAttr(`${v.label}  ${v.shortcut}`)}">${EdIcons.view(v.id)}</button>`
+        )
+        .join("") +
+      `<button class="ed-act ed-act-more" id="edMore" title="Más vistas">${EdIcons.view("chevron")}</button>`;
+
+    host.querySelectorAll("[data-view]").forEach((btn) => {
+      btn.addEventListener("click", () => pickView(btn.dataset.view));
+    });
+    $("#edMore").addEventListener("click", (e) => openViewMenu(e.currentTarget));
+  }
+
+  // El menú con todas las vistas, su atajo y su pin, montado sobre el mismo menú
+  // flotante que usa la tarjeta de Git.
+  function openViewMenu(anchor) {
+    openGitMenu(
+      anchor,
+      VIEWS.map((v) => ({
+        label: v.label,
+        hint: v.shortcut,
+        icon: EdIcons.view(v.id),
+        checked: v.id === view && !v.action,
+        onPick: () => pickView(v.id),
+        pin: v.action
+          ? null
+          : {
+              pinned: pinned.includes(v.id),
+              icon: EdIcons.view("pin"),
+              onPin: () => togglePin(v.id),
+            },
+      }))
+    );
+  }
+
+  function togglePin(id) {
+    pinned = pinned.includes(id) ? pinned.filter((p) => p !== id) : [...pinned, id];
+    writeStore("ed.pinned", pinned);
+    renderActivity();
+  }
+
+  // Un clic en la vista que ya está abierta pliega el carril, como en VS Code.
+  function pickView(id) {
+    const target = viewById(id);
+    if (target.action) return target.action();
+    if (id === view && sideOpen) return setSide(false);
+    view = id;
+    writeStore("ed.view", view);
+    setSide(true);
+    renderView();
+    renderActivity();
+  }
+
+  function setSide(open) {
+    sideOpen = open;
+    writeStore("ed.side", open);
+    $("#edBody").classList.toggle("side-closed", !open);
+    renderActivity();
+    if (editor) requestAnimationFrame(() => editor.layout());
+  }
+
+  function renderView() {
+    const host = $("#edView");
+    host.innerHTML = "";
+    host.dataset.view = view;
+    viewById(view).render(host);
+  }
+
+  function viewHead(title, actions = []) {
+    return (
+      `<div class="ed-view-head"><span class="ed-view-title">${escapeHtml(title)}</span>` +
+      `<span class="ed-view-acts">${actions
+        .map(
+          (a) =>
+            `<button class="ed-view-act" data-act="${a.id}" title="${escapeAttr(a.title)}">${EdIcons.view(a.icon)}</button>`
+        )
+        .join("")}</span></div>`
+    );
+  }
+
+  // ---- Vista: explorador ----
+  function renderExplorer(host) {
+    host.innerHTML =
+      viewHead("EXPLORADOR", [
+        { id: "newFile", icon: "newFile", title: "Archivo nuevo" },
+        { id: "newDir", icon: "newDir", title: "Carpeta nueva" },
+        { id: "reload", icon: "reload", title: "Releer la carpeta" },
+        { id: "collapse", icon: "collapse", title: "Plegar todo" },
+        { id: "more", icon: "ellipsis", title: "Más" },
+      ]) +
+      '<select id="edProject" class="ed-project"></select>' +
+      '<div class="ed-tree" id="edTree"></div>';
+
+    host.querySelector('[data-act="newFile"]').addEventListener("click", () => createEntry("file"));
+    host.querySelector('[data-act="newDir"]').addEventListener("click", () => createEntry("dir"));
+    host.querySelector('[data-act="reload"]').addEventListener("click", () => setRoot(root, { force: true }));
+    host.querySelector('[data-act="collapse"]').addEventListener("click", () => {
+      expanded.clear();
+      renderTree();
+    });
+    host.querySelector('[data-act="more"]').addEventListener("click", (e) =>
+      openGitMenu(e.currentTarget, [
+        { label: "Proyecto nuevo…", icon: EdIcons.view("newDir"), onPick: createProject },
+        { label: "Clonar repositorio…", icon: EdIcons.view("download"), onPick: cloneProject },
+        { separator: "" },
+        { label: "Releer la carpeta", icon: EdIcons.view("reload"), onPick: () => setRoot(root, { force: true }) },
+      ])
+    );
+    host.querySelector("#edProject").addEventListener("change", (e) => setRoot(e.target.value));
+
+    renderProjectPicker();
+    renderTree();
+  }
+
+  // ---- Vista: buscar ----
+  const searchState = { query: "", include: "", case: false, regex: false, word: false };
+  let searchData = null;
+  let searchBusy = false;
+  let searchTimer = null;
+
+  function renderSearchView(host) {
+    const toggle = (id, label, title) =>
+      `<button class="ed-toggle${searchState[id] ? " on" : ""}" data-opt="${id}" title="${escapeAttr(title)}">${label}</button>`;
+
+    host.innerHTML =
+      viewHead("BUSCAR") +
+      `<div class="ed-search">
+         <div class="ed-search-row">
+           <input id="edQ" class="ed-input" type="text" placeholder="Buscar en el proyecto" value="${escapeAttr(searchState.query)}" />
+           <span class="ed-toggles">
+             ${toggle("case", "Aa", "Distinguir mayúsculas")}
+             ${toggle("word", "ab|", "Palabra completa")}
+             ${toggle("regex", ".*", "Expresión regular")}
+           </span>
+         </div>
+         <input id="edInclude" class="ed-input small" type="text" placeholder="archivos a incluir: *.js, src/**" value="${escapeAttr(searchState.include)}" />
+       </div>
+       <div class="ed-results" id="edResults"></div>`;
+
+    const box = host.querySelector("#edQ");
+    const inc = host.querySelector("#edInclude");
+    box.addEventListener("input", () => {
+      searchState.query = box.value;
+      queueSearch();
+    });
+    inc.addEventListener("input", () => {
+      searchState.include = inc.value;
+      queueSearch();
+    });
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") runSearch();
+    });
+    host.querySelectorAll("[data-opt]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        searchState[btn.dataset.opt] = !searchState[btn.dataset.opt];
+        btn.classList.toggle("on");
+        runSearch();
+      })
+    );
+
+    renderResults();
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }
+
+  function queueSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 280);
+  }
+
+  // Lanza la búsqueda contra el servidor. Quien espera los 280 ms desde la última
+  // tecla es queueSearch, para no mandar una petición por pulsación.
+  async function runSearch() {
+    clearTimeout(searchTimer);
+    const q = searchState.query.trim();
+    if (!root || !q) {
+      searchData = null;
+      return renderResults();
+    }
+    searchBusy = true;
+    renderResults();
+    const params = new URLSearchParams({ path: root, q });
+    if (searchState.case) params.set("case", "1");
+    if (searchState.regex) params.set("regex", "1");
+    if (searchState.word) params.set("word", "1");
+    if (searchState.include.trim()) params.set("include", searchState.include.trim());
+
+    try {
+      const res = await fetch(`/api/search?${params}`);
+      const data = await res.json();
+      searchData = res.ok ? data : { error: data.error || `HTTP ${res.status}` };
+    } catch (err) {
+      searchData = { error: err.message };
+    }
+    searchBusy = false;
+    // La vista pudo cambiar mientras respondía
+    if (view === "search") renderResults();
+  }
+
+  function renderResults() {
+    const host = $("#edResults");
+    if (!host) return;
+    if (!root) return (host.innerHTML = '<div class="ed-view-empty">Elige un proyecto primero.</div>');
+    if (searchBusy) return (host.innerHTML = '<div class="ed-view-empty">Buscando…</div>');
+    if (!searchData) return (host.innerHTML = '<div class="ed-view-empty">Escribe qué buscar.</div>');
+    if (searchData.error) return (host.innerHTML = `<div class="ed-view-empty error-text">${escapeHtml(searchData.error)}</div>`);
+    if (!searchData.results.length) return (host.innerHTML = '<div class="ed-view-empty">Sin coincidencias.</div>');
+
+    const head =
+      `<div class="ed-results-head">${searchData.matches} en ${searchData.files} archivo${searchData.files === 1 ? "" : "s"}` +
+      (searchData.truncated ? " · hay más, afina la búsqueda" : "") +
+      "</div>";
+
+    host.innerHTML =
+      head +
+      searchData.results
+        .map(
+          (file) => `
+          <div class="ed-result">
+            <div class="ed-result-head">
+              <span class="ed-icon" style="color:${kindFor(file.name).color}">${iconFor(file.name)}</span>
+              <span class="ed-name">${escapeHtml(file.name)}</span>
+              <span class="ed-result-dir">${escapeHtml(file.dir === "." ? "" : file.dir)}</span>
+              <span class="ed-result-count">${file.lines.length}</span>
+            </div>
+            ${file.lines
+              .map(
+                (hit) => `
+              <button class="ed-hit" data-file="${escapeAttr(file.path)}" data-line="${hit.line}" data-col="${hit.start + 1}">
+                <span class="ed-hit-line">${hit.line}</span>
+                <span class="ed-hit-text">${highlight(hit)}</span>
+              </button>`
+              )
+              .join("")}
+          </div>`
+        )
+        .join("");
+
+    host.querySelectorAll("[data-file]").forEach((btn) =>
+      btn.addEventListener("click", () =>
+        openFile(btn.dataset.file, { line: Number(btn.dataset.line), column: Number(btn.dataset.col) })
+      )
+    );
+  }
+
+  function highlight(hit) {
+    const text = hit.text;
+    return (
+      escapeHtml(text.slice(0, hit.start)) +
+      `<mark>${escapeHtml(text.slice(hit.start, hit.end))}</mark>` +
+      escapeHtml(text.slice(hit.end))
+    );
+  }
+
+  // ---- Vista: notas ----
+  // Las mismas notas del dock, contra la carpeta del editor. Se piden aquí y no
+  // se comparte el estado con app.js porque las dos vistas pueden mirar
+  // carpetas distintas a la vez.
+  let edNotes = [];
+  let edNotesPath = null;
+
+  function renderNotesView(host) {
+    host.innerHTML =
+      viewHead("NOTAS") +
+      `<form class="ed-note-form" id="edNoteForm">
+         <input class="ed-input" id="edNoteBox" type="text" placeholder="Nota nueva y Enter" />
+       </form>
+       <div class="ed-notes" id="edNotes"></div>`;
+
+    host.querySelector("#edNoteForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const box = host.querySelector("#edNoteBox");
+      const text = box.value.trim();
+      if (!text || !root) return;
+      box.value = "";
+      await notesWrite("/api/notes", { text });
+    });
+
+    renderNotesList();
+    loadNotes();
+  }
+
+  async function loadNotes() {
+    if (!root) {
+      edNotes = [];
+      edNotesPath = null;
+      return renderNotesList();
+    }
+    edNotesPath = root;
+    try {
+      const res = await fetch(`/api/notes?path=${encodeURIComponent(root)}`);
+      const data = await res.json();
+      if (edNotesPath !== root) return;
+      edNotes = res.ok ? data.items || [] : [];
+    } catch (_) {
+      edNotes = [];
+    }
+    renderNotesList();
+  }
+
+  async function notesWrite(url, body, method) {
+    if (!root) return;
+    try {
+      const res = await fetch(url, {
+        method: method || "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: root, ...body }),
+      });
+      const data = await res.json();
+      if (!res.ok) return alert(data.error || `HTTP ${res.status}`);
+      edNotes = data.items || [];
+      renderNotesList();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  function renderNotesList() {
+    const host = $("#edNotes");
+    if (!host) return;
+    if (!root) return (host.innerHTML = '<div class="ed-view-empty">Abre un proyecto para tener notas suyas.</div>');
+    if (!edNotes.length) return (host.innerHTML = '<div class="ed-view-empty">Sin notas en esta carpeta.</div>');
+
+    host.innerHTML = edNotes
+      .map(
+        (n) => `
+        <div class="ed-note${n.done ? " done" : ""}" data-id="${escapeAttr(n.id)}">
+          <input type="checkbox" ${n.done ? "checked" : ""} title="${n.done ? "Desmarcar" : "Marcar como hecha"}" />
+          <span class="ed-note-text">${escapeHtml(n.text)}</span>
+          <button class="ed-note-del" title="Borrar">${EdIcons.view("close")}</button>
+        </div>`
+      )
+      .join("");
+
+    host.querySelectorAll(".ed-note").forEach((row) => {
+      const id = row.dataset.id;
+      row.querySelector("input").addEventListener("change", (e) =>
+        notesWrite("/api/notes/item", { id, done: e.target.checked })
+      );
+      row.querySelector(".ed-note-del").addEventListener("click", () => notesWrite("/api/notes", { id }, "DELETE"));
+    });
+  }
+
+  // ---- Vista: extensiones ----
+  // El panel entero vive en extensions.js: aquí solo se le da la caja.
+  function renderExtensionsView(host) {
+    host.innerHTML = viewHead("EXTENSIONES");
+    const box = document.createElement("div");
+    box.className = "ed-ext-wrap";
+    host.appendChild(box);
+    EdExtensions.renderPanel(box);
   }
 
   // ---- Árbol de archivos ----
@@ -441,6 +907,7 @@ const CodeEditor = (() => {
 
   function renderTree() {
     const host = $("#edTree");
+    if (!host) return;
     host.innerHTML = "";
     if (!root) {
       host.innerHTML = '<div class="ed-tree-empty">Elige un proyecto arriba.</div>';
@@ -452,23 +919,73 @@ const CodeEditor = (() => {
   function renderLevel(dir, depth) {
     const wrap = document.createElement("div");
     (dirs.get(dir) || []).forEach((entry) => {
-      const row = document.createElement("button");
+      const open = entry.dir && expanded.has(entry.path);
       const marked = entry.dir ? entry.path === selectedDir : entry.path === activePath;
+      const row = document.createElement("button");
       row.className = `ed-row ${entry.dir ? "dir" : "file"}${marked ? " active" : ""}`;
-      row.style.paddingLeft = `${8 + depth * 12}px`;
-      const kind = entry.dir ? null : kindFor(entry.name);
-      const mark = entry.dir ? (expanded.has(entry.path) ? "▾" : "▸") : "";
-      row.innerHTML = entry.dir
-        ? `<span class="ed-caret">${mark}</span><span class="ed-name">${escapeHtml(entry.name)}</span>`
-        : `<span class="ed-icon" style="color:${kind.color}">${kind.icon}</span>` +
-          `<span class="ed-name">${escapeHtml(entry.name)}</span>` +
-          `<span class="ed-dot"${files.get(entry.path)?.saved === false ? "" : " hidden"}>●</span>`;
+      row.style.paddingLeft = `${6 + depth * 11}px`;
+
+      const mark = gitMarkFor(entry);
+      const dirty = !entry.dir && files.get(entry.path)?.saved === false;
+      row.innerHTML =
+        (entry.dir
+          ? `<span class="ed-caret${open ? " open" : ""}">${EdIcons.view("caret")}</span>` +
+            `<span class="ed-icon dir">${dirIcon(open)}</span>`
+          : `<span class="ed-caret"></span><span class="ed-icon" style="color:${kindFor(entry.name).color}">${iconFor(entry.name)}</span>`) +
+        `<span class="ed-name">${escapeHtml(entry.name)}</span>` +
+        (dirty ? `<span class="ed-dot">${EdIcons.view("dot")}</span>` : "") +
+        (mark ? `<span class="ed-git ${mark.cls}">${escapeHtml(mark.letter)}</span>` : "");
+
+      if (mark) row.classList.add(`git-${mark.cls}`);
       row.addEventListener("click", () => (entry.dir ? selectDir(entry.path) : openFile(entry.path)));
       wrap.appendChild(row);
 
-      if (entry.dir && expanded.has(entry.path)) wrap.appendChild(renderLevel(entry.path, depth + 1));
+      if (open) wrap.appendChild(renderLevel(entry.path, depth + 1));
     });
     return wrap;
+  }
+
+  // Un archivo enseña su letra de git; una carpeta, un punto si algo cambió
+  // dentro. Las dos cosas salen del mismo /api/git que usa el carril derecho.
+  function gitMarkFor(entry) {
+    if (entry.dir) {
+      return gitDirs.get(entry.path) ? { letter: "•", cls: "dir-dirty" } : null;
+    }
+    const hit = gitMarks.get(entry.path);
+    if (!hit) return null;
+    return { letter: hit.letter, cls: hit.kind || "modified" };
+  }
+
+  // El estado de git del árbol sale del mismo /api/git que usa la tarjeta del
+  // carril derecho: una sola lectura del repositorio para las dos vistas.
+  async function loadGitMarks({ force = false } = {}) {
+    if (!root) {
+      gitMarks = new Map();
+      gitDirs = new Map();
+      return;
+    }
+    if (!force && gitRoot === root && gitMarks.size) return;
+    try {
+      const res = await fetch(`/api/git?path=${encodeURIComponent(root)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      gitRoot = root;
+      gitMarks = new Map();
+      gitDirs = new Map();
+      if (!data.repo || !data.root) return renderTree();
+      (data.files || []).forEach((f) => {
+        const abs = `${data.root}/${f.path}`;
+        gitMarks.set(abs, f);
+        let dir = dirName(abs);
+        while (dir && dir.length >= root.length) {
+          gitDirs.set(dir, (gitDirs.get(dir) || 0) + 1);
+          dir = dirName(dir);
+        }
+      });
+      renderTree();
+    } catch (_) {
+      // el servidor puede estar reiniciándose: se reintenta al siguiente evento
+    }
   }
 
   async function toggleDir(dir) {
@@ -487,9 +1004,8 @@ const CodeEditor = (() => {
     renderTree();
   }
 
-  // Actualiza la carpeta seleccionada en el árbol y activa su expansión.
-  // El valor de dir se almacena en selectedDir, que es el padre de los nuevos elementos.
-  // Si no hay carpeta seleccionada, se usa la raíz del proyecto.
+  // La carpeta seleccionada es el padre de lo que se cree después; sin ninguna,
+  // la raíz del proyecto.
   function selectDir(dir) {
     selectedDir = dir;
     return toggleDir(dir);
@@ -507,10 +1023,8 @@ const CodeEditor = (() => {
     renderTree();
   }
 
-  // Crea un nuevo archivo o carpeta dentro de la carpeta seleccionada.
-  // Pide al usuario el nombre, valida que no esté vacío y envía la solicitud al servidor.
-  // Si el recurso ya existe, el servidor devuelve un 409 y aquí solo se enseña ese mensaje.
-  // Si todo sale bien, actualiza el árbol y selecciona el nuevo elemento.
+  // Pide el nombre y deja que el servidor decida: responde 409 si ya existe algo
+  // con ese nombre, y aquí solo se enseña ese mensaje.
   async function createEntry(kind) {
     const parent = targetDir();
     if (!parent) return alert("Elige un proyecto arriba.");
@@ -539,10 +1053,8 @@ const CodeEditor = (() => {
     flash(`Creado ${baseName(data.path)}`);
   }
 
-  // Abre el diálogo nativo para elegir la carpeta padre del nuevo proyecto: nace fuera
-  // de las carpetas ya registradas, y es la única forma de que el usuario la elija a
-  // conciencia. Después pide el nombre y si debe inicializarse con Git, y al crearlo lo
-  // añade a la lista de proyectos y lo carga como raíz.
+  // El proyecto nuevo nace fuera de las carpetas ya registradas, así que la
+  // carpeta padre se elige con el diálogo nativo y no con el árbol.
   function createProject() {
     requestFolder(async (parent) => {
       if (!parent) return;
@@ -576,7 +1088,7 @@ const CodeEditor = (() => {
   }
 
   // ---- Archivos abiertos ----
-  async function openFile(file) {
+  async function openFile(file, { line = 0, column = 1 } = {}) {
     await ensureEditor();
     if (!files.has(file)) {
       const res = await fetch(`/api/files/read?path=${encodeURIComponent(file)}`);
@@ -584,23 +1096,37 @@ const CodeEditor = (() => {
       if (!res.ok) return alert(data.error || `HTTP ${res.status}`);
 
       const model = monaco.editor.createModel(data.content, langFor(baseName(file)));
-      const entry = { model, mtimeMs: data.mtimeMs, saved: true };
+      const entry = { model, mtimeMs: data.mtimeMs, saved: true, state: null };
       model.onDidChangeContent(() => {
         if (entry.saved) {
           entry.saved = false;
           renderTabs();
           renderTree();
+          renderStatus();
         }
       });
       files.set(file, entry);
     }
+
+    if (activePath && activePath !== file && files.has(activePath)) {
+      files.get(activePath).state = editor.saveViewState();
+    }
     activePath = file;
-    editor.setModel(files.get(file).model);
+    const entry = files.get(file);
+    editor.setModel(entry.model);
+    if (line) {
+      editor.revealLineInCenter(line);
+      editor.setPosition({ lineNumber: line, column });
+    } else if (entry.state) {
+      editor.restoreViewState(entry.state);
+    }
     editor.focus();
     renderTabs();
     renderTree();
-    $("#edPath").textContent = tildePath(file);
+    renderCrumbs();
+    renderStatus();
     startWatching();
+    loadTools();
   }
 
   function closeFile(file) {
@@ -613,10 +1139,11 @@ const CodeEditor = (() => {
       activePath = [...files.keys()][0] || null;
       if (activePath) editor.setModel(files.get(activePath).model);
       else editor.setModel(null);
-      $("#edPath").textContent = activePath ? tildePath(activePath) : "";
     }
     renderTabs();
     renderTree();
+    renderCrumbs();
+    renderStatus();
   }
 
   function renderTabs() {
@@ -624,13 +1151,16 @@ const CodeEditor = (() => {
     host.innerHTML = "";
     $("#edEmpty").hidden = files.size > 0;
     $("#edHost").hidden = files.size === 0;
+    $("#edCrumbs").hidden = files.size === 0;
 
     files.forEach((entry, file) => {
       const tab = document.createElement("div");
       tab.className = `ed-tab ${file === activePath ? "active" : ""}${entry.saved ? "" : " dirty"}`;
+      tab.title = tildePath(file);
       tab.innerHTML =
+        `<span class="ed-tab-icon" style="color:${kindFor(baseName(file)).color}">${iconFor(baseName(file))}</span>` +
         `<span class="ed-tab-name">${escapeHtml(baseName(file))}</span>` +
-        `<button class="ed-tab-close" title="Cerrar">${entry.saved ? "✕" : "●"}</button>`;
+        `<button class="ed-tab-close" title="Cerrar">${entry.saved ? EdIcons.view("close") : EdIcons.view("dot")}</button>`;
       tab.addEventListener("click", (e) => {
         if (e.target.closest(".ed-tab-close")) closeFile(file);
         else openFile(file);
@@ -639,12 +1169,251 @@ const CodeEditor = (() => {
     });
   }
 
+  // La miga de pan es la ruta dentro del proyecto: cada carpeta la selecciona en
+  // el árbol. Los símbolos del archivo no salen porque Monaco no expone su
+  // outline por API pública.
+  function renderCrumbs() {
+    const host = $("#edCrumbs");
+    if (!activePath) {
+      host.innerHTML = "";
+      return;
+    }
+    const rel = root && activePath.startsWith(`${root}/`) ? activePath.slice(root.length + 1) : baseName(activePath);
+    const parts = rel.split("/");
+    const name = parts.pop();
+    let walk = root;
+
+    host.innerHTML =
+      parts
+        .map((part) => {
+          walk = `${walk}/${part}`;
+          return `<button class="ed-crumb" data-dir="${escapeAttr(walk)}">${escapeHtml(part)}</button><span class="ed-crumb-sep">${EdIcons.view("caret")}</span>`;
+        })
+        .join("") +
+      `<span class="ed-crumb file"><span class="ed-crumb-icon" style="color:${kindFor(name).color}">${iconFor(name)}</span>${escapeHtml(name)}</span>`;
+
+    host.querySelectorAll("[data-dir]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        expanded.add(btn.dataset.dir);
+        if (!dirs.has(btn.dataset.dir)) loadDir(btn.dataset.dir).then(renderTree, () => {});
+        selectedDir = btn.dataset.dir;
+        pickView("explorer");
+        renderTree();
+      })
+    );
+  }
+
+  // ---- Barra de estado ----
+  let flashText = "";
+
+  function renderStatus() {
+    const entry = activePath ? files.get(activePath) : null;
+    const lang = activePath ? langFor(baseName(activePath)) : "";
+    const counts = problems.length
+      ? `${problems.filter((p) => p.severity === "error").length} ⊗  ${problems.filter((p) => p.severity !== "error").length} ⚠`
+      : "sin problemas";
+    const fmt = formatter();
+    const host = $("#edStatus");
+
+    host.innerHTML =
+      `<button class="ed-status-item act" data-problems title="Problemas del archivo">${escapeHtml(counts)}</button>` +
+      (activePath && linters().length
+        ? `<button class="ed-status-item act" data-lint${linting ? " disabled" : ""}>${linting ? "revisando…" : "revisar"}</button>`
+        : "") +
+      (fmt ? `<button class="ed-status-item act" data-format title="Formatear con ${escapeAttr(fmt.name)}">formatear</button>` : "") +
+      `<span class="push"></span>` +
+      `<span class="ed-status-flash">${escapeHtml(flashText)}</span>` +
+      (entry && !entry.saved ? '<span class="ed-status-item dirty">sin guardar</span>' : "") +
+      `<button class="ed-status-item act" data-save title="Guardar el archivo">Guardar ⌘S</button>` +
+      `<span class="ed-status-item ed-status-cursor">Ln ${cursor.line}, Col ${cursor.column}</span>` +
+      `<span class="ed-status-item">Espacios: 2</span>` +
+      `<span class="ed-status-item">${escapeHtml(lang)}</span>`;
+
+    host.querySelector("[data-save]").addEventListener("click", () => save());
+    host.querySelector("[data-problems]").addEventListener("click", () => setProblemsOpen(!problemsOpen));
+    host.querySelector("[data-lint]")?.addEventListener("click", () => runLinters());
+    host.querySelector("[data-format]")?.addEventListener("click", () => formatActive());
+  }
+
+  function flash(text) {
+    flashText = text;
+    renderStatus();
+    clearTimeout(flash.timer);
+    flash.timer = setTimeout(() => {
+      flashText = "";
+      renderStatus();
+    }, 2200);
+  }
+
+  // ---- Herramientas locales y panel de Problemas ----
+  // La otra cara de las extensiones: lo que ya está instalado en el Mac. El
+  // servidor las ejecuta (tools.js) y aquí solo se pintan sus problemas y se
+  // marcan en Monaco.
+  let toolList = [];
+  let toolsFor = null;
+  let problems = [];
+  let problemsOpen = readStore("ed.problems", false);
+  let linting = false;
+
+  // El catálogo depende del archivo abierto, porque cada herramienta declara a qué
+  // archivos se aplica: la clave de la caché lleva carpeta y archivo.
+  async function loadTools() {
+    if (!root) return;
+    const key = `${root}::${activePath || ""}`;
+    if (toolsFor === key) return;
+    try {
+      const params = new URLSearchParams({ path: root });
+      if (activePath) params.set("file", activePath);
+      const res = await fetch(`/api/tools?${params}`);
+      if (!res.ok) return;
+      toolList = (await res.json()).tools || [];
+      toolsFor = key;
+      renderStatus();
+    } catch (_) {
+      // el servidor puede estar reiniciándose
+    }
+  }
+
+  const linters = () => toolList.filter((t) => t.kind === "lint" && t.available && (t.matches || t.projectWide));
+  const formatter = () => toolList.find((t) => t.kind === "format" && t.available && t.matches);
+
+  async function runLinters() {
+    if (!activePath || linting) return;
+    const list = linters();
+    if (!list.length) return flash("Sin herramientas de revisión para este archivo");
+
+    linting = true;
+    renderStatus();
+    const found = [];
+    for (const tool of list) {
+      try {
+        const res = await fetch("/api/tools/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: tool.id, path: activePath }),
+        });
+        const data = await res.json();
+        if (res.ok && data.problems) found.push(...data.problems.map((p) => ({ ...p, tool: tool.id })));
+        else if (data.error) flash(data.error);
+      } catch (err) {
+        flash(err.message);
+      }
+    }
+    problems = found;
+    linting = false;
+    markProblems();
+    if (found.length) setProblemsOpen(true);
+    renderProblems();
+    renderStatus();
+    flash(found.length ? `${found.length} problema${found.length === 1 ? "" : "s"}` : "Sin problemas");
+  }
+
+  // Los problemas del archivo abierto se subrayan dentro de Monaco; los de otros
+  // archivos solo salen en la lista, que es donde se puede saltar a ellos.
+  function markProblems() {
+    if (!monaco) return;
+    files.forEach((entry, file) => {
+      const mine = problems.filter((p) => p.file === file);
+      monaco.editor.setModelMarkers(
+        entry.model,
+        "tools",
+        mine.map((p) => ({
+          startLineNumber: p.line,
+          startColumn: p.column,
+          endLineNumber: p.line,
+          endColumn: p.column + 1,
+          message: `${p.message}${p.rule ? ` (${p.rule})` : ""}`,
+          severity: p.severity === "warning" ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
+          source: p.tool,
+        }))
+      );
+    });
+  }
+
+  function setProblemsOpen(open) {
+    problemsOpen = open;
+    writeStore("ed.problems", open);
+    renderProblems();
+    renderStatus();
+    if (editor) requestAnimationFrame(() => editor.layout());
+  }
+
+  function renderProblems() {
+    const host = $("#edProblems");
+    host.hidden = !problemsOpen;
+    if (!problemsOpen) return;
+
+    const head = `
+      <div class="ed-problems-head">
+        <span>PROBLEMAS</span>
+        <span class="mono muted small">${problems.length}</span>
+        <button class="ed-view-act push" data-run title="Revisar de nuevo">${EdIcons.view("reload")}</button>
+        <button class="ed-view-act" data-close title="Cerrar">${EdIcons.view("close")}</button>
+      </div>`;
+
+    host.innerHTML =
+      head +
+      (problems.length
+        ? `<div class="ed-problems-list">${problems
+            .map(
+              (p, i) => `
+          <button class="ed-problem ${p.severity}" data-problem="${i}">
+            <span class="ed-problem-sev">${EdIcons.view("problems")}</span>
+            <span class="ed-problem-msg">${escapeHtml(p.message)}</span>
+            <span class="ed-problem-where">${escapeHtml(p.rel || baseName(p.file))}:${p.line}</span>
+            <span class="ed-problem-rule">${escapeHtml(p.rule || p.tool || "")}</span>
+          </button>`
+            )
+            .join("")}</div>`
+        : '<div class="ed-view-empty">Nada que señalar.</div>');
+
+    host.querySelector("[data-run]").addEventListener("click", () => runLinters());
+    host.querySelector("[data-close]").addEventListener("click", () => setProblemsOpen(false));
+    host.querySelectorAll("[data-problem]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const p = problems[Number(btn.dataset.problem)];
+        openFile(p.file, { line: p.line, column: p.column });
+      })
+    );
+  }
+
+  // Formatear devuelve el texto entero: se aplica con pushEditOperations para no
+  // perder el cursor ni el historial de deshacer, igual que la recarga externa.
+  async function formatActive({ silent = false } = {}) {
+    const tool = formatter();
+    const entry = activePath && files.get(activePath);
+    if (!tool || !entry) return false;
+
+    try {
+      const res = await fetch("/api/tools/format", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: tool.id, path: activePath, content: entry.model.getValue() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        if (!silent) flash(data.error || data.output || "No se pudo formatear");
+        return false;
+      }
+      if (data.content === entry.model.getValue()) return true;
+      const model = entry.model;
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: data.content }], () => null);
+      model.pushStackElement();
+      if (!silent) flash(`Formateado con ${tool.name || tool.id}`);
+      return true;
+    } catch (err) {
+      if (!silent) flash(err.message);
+      return false;
+    }
+  }
+
   // ---- Guardar ----
   async function save() {
     if (!activePath) return;
     const entry = files.get(activePath);
     if (!entry) return;
     if (entry.saved) return flash("Sin cambios que guardar");
+    if (readStore("ed.fmtOnSave", false)) await formatActive({ silent: true });
 
     const res = await fetch("/api/files/write", {
       method: "POST",
@@ -659,13 +1428,6 @@ const CodeEditor = (() => {
     renderTabs();
     renderTree();
     flash(`Guardado ${baseName(activePath)}`);
-  }
-
-  function flash(text) {
-    const el = $("#edSaved");
-    el.textContent = text;
-    clearTimeout(flash.timer);
-    flash.timer = setTimeout(() => (el.textContent = ""), 2200);
   }
 
   // ---- Vigilar cambios de Claude Code ----
@@ -715,7 +1477,7 @@ const CodeEditor = (() => {
   // ---- Proyecto ----
   function renderProjectPicker() {
     const sel = $("#edProject");
-    const current = root;
+    if (!sel) return;
     sel.innerHTML = '<option value="">Elige un proyecto…</option>';
     projects
       .filter((p) => p.exists !== false)
@@ -725,7 +1487,7 @@ const CodeEditor = (() => {
         opt.textContent = p.name;
         sel.appendChild(opt);
       });
-    sel.value = current || "";
+    sel.value = root || "";
   }
 
   async function setRoot(dir, { force = false } = {}) {
@@ -746,41 +1508,75 @@ const CodeEditor = (() => {
       root = null;
     }
     renderTree();
+    renderProjectPicker();
+    loadGitMarks({ force: true });
+    if (view === "notes") loadNotes();
+    if (view === "search") runSearch();
+    toolsFor = null;
+    loadTools();
   }
 
   // ---- Entrada desde el panel ----
   // showTab("editor") llama aquí cada vez que se abre la pestaña.
   async function open() {
-    renderProjectPicker();
+    if (!$("#edActivity").children.length) {
+      renderActivity();
+      renderView();
+      setSide(sideOpen);
+      renderStatus();
+    }
     if (!root) {
       const first = projects.find((p) => p.exists !== false);
-      if (first) {
-        await setRoot(first.path);
-        renderProjectPicker();
-      } else {
-        renderTree();
-      }
+      if (first) await setRoot(first.path);
+      else renderProjectPicker();
+    } else {
+      renderProjectPicker();
+      renderTree();
     }
     if (files.size) await ensureEditor();
     renderTabs();
+    renderCrumbs();
+    renderProblems();
+    loadTools();
+    EdExtensions.init();
   }
 
-  $("#edProject").addEventListener("change", (e) => setRoot(e.target.value));
-  $("#edReloadBtn").addEventListener("click", () => setRoot(root, { force: true }));
-  $("#edNewFileBtn").addEventListener("click", () => createEntry("file"));
-  $("#edNewDirBtn").addEventListener("click", () => createEntry("dir"));
-  $("#edNewProjectBtn").addEventListener("click", createProject);
-  $("#edCloneBtn").addEventListener("click", cloneProject);
-  $("#edSaveBtn").addEventListener("click", () => save());
+  const SHORTCUTS = { e: "explorer", f: "search", n: "notes", x: "extensions", m: "map" };
 
-  // ⌘S funciona aunque el foco no esté dentro de Monaco
   window.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-      if (!document.querySelector("#tab-editor.active")) return;
+    if (!document.querySelector("#tab-editor.active")) return;
+    const meta = e.metaKey || e.ctrlKey;
+    if (!meta) return;
+    const key = e.key.toLowerCase();
+
+    // ⌘S funciona aunque el foco no esté dentro de Monaco
+    if (key === "s" && !e.shiftKey) {
       e.preventDefault();
-      save();
+      return save();
+    }
+    if (e.shiftKey && SHORTCUTS[key]) {
+      e.preventDefault();
+      pickView(SHORTCUTS[key]);
     }
   });
 
-  return { open, setRoot, openFile };
+  // Claude Code y la terminal cambian archivos por fuera del panel: el mismo
+  // evento que refresca la tarjeta de Git repinta las letras del árbol.
+  window.addEventListener("ed:git-changed", () => loadGitMarks({ force: true }));
+
+  const refreshIcons = () => {
+    renderTree();
+    renderTabs();
+    renderCrumbs();
+  };
+
+  return {
+    open,
+    setRoot,
+    openFile,
+    applyTheme,
+    refreshIcons,
+    rootPath: () => root,
+    refreshGit: () => loadGitMarks({ force: true }),
+  };
 })();

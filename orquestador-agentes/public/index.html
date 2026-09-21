@@ -98,28 +98,22 @@
 
     <!-- ============ EDITOR: árbol de archivos + Monaco ============ -->
     <section id="tab-editor" class="tab-panel">
-      <div class="ed-toolbar">
-        <select id="edProject" class="map-select"></select>
-        <span class="mono muted small" id="edPath"></span>
-        <span class="saved-msg push" id="edSaved"></span>
-        <button class="btn" id="edNewFileBtn" title="Archivo nuevo en la carpeta seleccionada">+ Archivo</button>
-        <button class="btn" id="edNewDirBtn" title="Carpeta nueva dentro de la seleccionada">+ Carpeta</button>
-        <button class="btn" id="edNewProjectBtn" title="Crear una carpeta nueva y abrirla como proyecto">+ Proyecto</button>
-        <button class="btn" id="edCloneBtn" title="Clonar un repositorio y abrirlo como proyecto">+ Clonar</button>
-        <button class="btn" id="edReloadBtn" title="Releer la carpeta">Releer</button>
-        <button class="btn primary" id="edSaveBtn">Guardar ⌘S</button>
-      </div>
-
       <div class="ed-body" id="edBody">
-        <aside class="ed-tree" id="edTree"></aside>
+        <aside class="ed-side" id="edSide">
+          <div class="ed-activity" id="edActivity"></div>
+          <div class="ed-view" id="edView"></div>
+        </aside>
         <div class="ed-resizer" id="edResizer" title="Arrastra para cambiar el ancho"></div>
         <div class="ed-main">
           <div class="ed-tabs" id="edTabs"></div>
+          <div class="ed-crumbs" id="edCrumbs"></div>
           <div class="ed-host" id="edHost"></div>
           <div class="ed-empty" id="edEmpty">
             <span class="plan-empty-title">Ningún archivo abierto</span>
-            <span class="plan-empty-text">Elige un proyecto arriba y abre un archivo del árbol. Se guarda con ⌘S, y si Claude Code lo cambia por su cuenta se recarga solo.</span>
+            <span class="plan-empty-text">Elige un proyecto en el explorador y abre un archivo del árbol. Se guarda con ⌘S, y si Claude Code lo cambia por su cuenta se recarga solo.</span>
           </div>
+          <div class="ed-problems" id="edProblems" hidden></div>
+          <div class="ed-status" id="edStatus"></div>
         </div>
       </div>
     </section>
@@ -368,6 +362,8 @@
 <script src="branchcolor.js"></script>
   <script src="app.js"></script>
 <script src="graph.js"></script>
+<script src="edicons.js"></script>
 <script src="editor.js"></script>
+<script src="extensions.js"></script>
 </body>
 </html>
