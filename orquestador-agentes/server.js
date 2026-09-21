@@ -14,6 +14,9 @@ const commitplan = require("./commitplan");
 const notesstore = require("./notes");
 const debugsuite = require("./debug");
 const inbox = require("./inbox");
+const search = require("./search");
+const vsix = require("./vsix");
+const toolsuite = require("./tools");
 
 const DEFAULT_DATA_DIR = path.join(__dirname, "data");
 // La app de macOS pasa ORQ_DATA_DIR para guardar los datos fuera del bundle
@@ -21,9 +24,15 @@ const DEFAULT_DATA_DIR = path.join(__dirname, "data");
 const DATA_DIR = process.env.ORQ_DATA_DIR || DEFAULT_DATA_DIR;
 if (DATA_DIR !== DEFAULT_DATA_DIR) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  // Solo lo que el usuario edita desde el panel se copia a su carpeta de datos.
+  // El catálogo de herramientas no: se lee del bundle (ver TOOLS_PATH), así una
+  // versión nueva estrena su catálogo en vez de quedarse con el sembrado la
+  // primera vez. Una semilla que no viajó en el bundle se salta en vez de
+  // tumbar el arranque.
   for (const file of ["agents.json", "config.json"]) {
     const dest = path.join(DATA_DIR, file);
-    if (!fs.existsSync(dest)) fs.copyFileSync(path.join(DEFAULT_DATA_DIR, file), dest);
+    const seed = path.join(DEFAULT_DATA_DIR, file);
+    if (!fs.existsSync(dest) && fs.existsSync(seed)) fs.copyFileSync(seed, dest);
   }
 }
 const AGENTS_PATH = path.join(DATA_DIR, "agents.json");
@@ -1522,6 +1531,396 @@ app.post("/api/files/new", (req, res) => {
 
 // Fechas de modificación de los archivos abiertos: así el editor se entera de
 // que Claude Code acaba de tocar uno y lo recarga.
+// ---- Herramientas locales ----
+// La otra mitad de "extensiones": lo que ya está instalado en el Mac (eslint,
+// prettier, tsc…) corriendo sobre el archivo abierto. El catálogo está en disco
+// y es quien pone los argumentos; del panel solo vienen el id y la ruta, que se
+// valida contra Proyectos. Siempre execFile, nunca la shell.
+// El catálogo viaja con la app y no se escribe nunca desde el panel, así que
+// manda el del bundle; el de la carpeta de datos solo existe si el usuario puso
+// el suyo a mano, y entonces gana.
+const TOOLS_PATH = [path.join(DATA_DIR, "tools.json"), path.join(DEFAULT_DATA_DIR, "tools.json")].find((p) =>
+  fs.existsSync(p)
+);
+let toolCatalog = [];
+try {
+  toolCatalog = toolsuite.normalizeTools(loadJSON(TOOLS_PATH).tools);
+} catch (_) {
+  toolCatalog = [];
+}
+
+const findTool = (id) => toolCatalog.find((t) => t.id === id);
+
+app.get("/api/tools", (req, res) => {
+  const dir = req.query.path ? insideProject(req.query.path) : null;
+  const root = dir ? (isDirectory(dir) ? dir : path.dirname(dir)) : null;
+  const name = req.query.file ? path.basename(String(req.query.file)) : null;
+  res.json({
+    tools: toolCatalog.map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      kind: t.kind,
+      bin: t.bin,
+      projectWide: t.projectWide,
+      available: Boolean(toolsuite.resolveBin(t, root)),
+      matches: name ? toolsuite.matchesFile(t, name) : null,
+    })),
+  });
+});
+
+function runTool(tool, { file, root, input }) {
+  const bin = toolsuite.resolveBin(tool, root);
+  if (!bin) return Promise.resolve({ ok: false, missing: true, output: `No encuentro ${tool.bin} en este proyecto ni en el PATH` });
+
+  const args = toolsuite.buildArgs(tool, { file, dir: root });
+  return new Promise((resolve) => {
+    const child = child_process.execFile(
+      bin,
+      args,
+      { cwd: root, timeout: toolsuite.LIMITS.timeoutMs, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" } },
+      (err, stdout, stderr) => {
+        // Un linter que encuentra problemas sale con código distinto de 0: eso
+        // no es un fallo de ejecución, es su respuesta
+        const killed = err && err.killed;
+        resolve({
+          ok: !killed,
+          timedOut: Boolean(killed),
+          code: err && typeof err.code === "number" ? err.code : 0,
+          stdout: toolsuite.clamp(stdout),
+          stderr: toolsuite.clamp(stderr),
+        });
+      }
+    );
+    if (tool.stdin) {
+      child.stdin.end(typeof input === "string" ? input : "");
+    }
+  });
+}
+
+app.post("/api/tools/run", async (req, res) => {
+  const tool = findTool(typeof req.body.id === "string" ? req.body.id : "");
+  if (!tool) return res.status(404).json({ error: "No conozco esa herramienta" });
+  if (tool.kind !== "lint") return res.status(400).json({ error: "Esa herramienta es de formato, no de revisión" });
+
+  const target = insideProject(req.body.path);
+  if (!target) return res.status(403).json(FORBIDDEN);
+  const isDir = isDirectory(target);
+  const root = isDir ? target : path.dirname(target);
+  const file = isDir ? null : target;
+  if (!isDir && !tool.projectWide && !toolsuite.matchesFile(tool, path.basename(target))) {
+    return res.status(400).json({ error: `${tool.name} no se aplica a ese archivo` });
+  }
+
+  const out = await runTool(tool, { file, root: tool.projectWide ? projectRootOf(target) : root });
+  if (out.missing) return res.json({ ok: false, missing: true, problems: [], output: out.output });
+
+  const parsed = toolsuite.parseOutput(tool, { stdout: out.stdout, stderr: out.stderr, file });
+  const problems = toolsuite.absolutize(parsed, projectRootOf(target));
+  res.json({
+    ok: out.ok,
+    timedOut: out.timedOut,
+    tool: tool.id,
+    problems,
+    ...toolsuite.summarize(problems),
+    output: toolsuite.clamp(`${out.stdout}${out.stderr}`),
+  });
+});
+
+// La carpeta de Proyectos que contiene la ruta: es contra ella contra la que se
+// resuelven los problemas y donde corre una herramienta de proyecto entero.
+function projectRootOf(target) {
+  const roots = projectRoots()
+    .map((p) => safepath.realOrNull(p))
+    .filter(Boolean)
+    .filter((root) => safepath.isInside(root, target))
+    .sort((a, b) => b.length - a.length);
+  return roots[0] || path.dirname(target);
+}
+
+app.post("/api/tools/format", async (req, res) => {
+  const tool = findTool(typeof req.body.id === "string" ? req.body.id : "");
+  if (!tool) return res.status(404).json({ error: "No conozco esa herramienta" });
+  if (tool.kind !== "format") return res.status(400).json({ error: "Esa herramienta no formatea" });
+
+  const file = insideProject(req.body.path);
+  if (!file || isDirectory(file)) return res.status(403).json(FORBIDDEN);
+  if (!toolsuite.matchesFile(tool, path.basename(file))) {
+    return res.status(400).json({ error: `${tool.name} no formatea ese tipo de archivo` });
+  }
+  if (typeof req.body.content !== "string") return res.status(400).json({ error: "Falta 'content'" });
+  if (Buffer.byteLength(req.body.content) > safepath.MAX_FILE_BYTES) {
+    return res.status(413).json({ error: "El archivo pasa de 2 MB" });
+  }
+
+  const out = await runTool(tool, { file, root: projectRootOf(file), input: req.body.content });
+  if (out.missing) return res.json({ ok: false, missing: true, output: out.output });
+  // Sin stdout no hay nada que aplicar: se devuelve lo que dijo la herramienta
+  if (!out.ok || !out.stdout.trim()) {
+    return res.json({ ok: false, output: toolsuite.clamp(out.stderr || out.stdout) || "La herramienta no devolvió nada" });
+  }
+  res.json({ ok: true, tool: tool.id, content: out.stdout });
+});
+
+// ---- Extensiones (lo declarativo de un .vsix) ----
+// Aquí no hay extension host: de una extensión se aprovechan su tema, sus
+// iconos de archivo y sus snippets, y su código nunca se ejecuta ni se sirve.
+// Los paquetes vienen de Open VSX porque el marketplace de Microsoft solo
+// permite su uso desde productos suyos.
+const OPEN_VSX = "https://open-vsx.org";
+const EXT_DIR = path.join(DATA_DIR, "extensions");
+const EXT_STATE_PATH = path.join(DATA_DIR, "extensions.json");
+const EXT_MAX_BYTES = 30 * 1024 * 1024;
+const EXT_TIMEOUT_MS = 120000;
+
+let extState = fs.existsSync(EXT_STATE_PATH)
+  ? loadJSON(EXT_STATE_PATH)
+  : { disabled: [], theme: null, iconTheme: null };
+
+const saveExtState = () => saveJSON(EXT_STATE_PATH, extState);
+const extPath = (id) => path.join(EXT_DIR, id);
+
+function installedExtensions() {
+  if (!fs.existsSync(EXT_DIR)) return [];
+  return fs
+    .readdirSync(EXT_DIR, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !vsix.idError(e.name))
+    .map((e) => {
+      try {
+        const manifest = vsix.readManifest(path.join(EXT_DIR, e.name));
+        return { ...manifest, id: e.name, enabled: !extState.disabled.includes(e.name) };
+      } catch (err) {
+        return { id: e.name, displayName: e.name, broken: err.message, enabled: false };
+      }
+    })
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
+}
+
+const extSnapshot = () => ({
+  extensions: installedExtensions(),
+  theme: extState.theme,
+  iconTheme: extState.iconTheme,
+  source: OPEN_VSX,
+});
+
+app.get("/api/extensions", (_req, res) => res.json(extSnapshot()));
+
+// Buscar en Open VSX pasa por el servidor: el panel no sale a internet por su
+// cuenta, y así la consulta lleva topes y un timeout.
+app.get("/api/extensions/search", async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 120) : "";
+  if (!q) return res.json({ extensions: [] });
+  const url = `${OPEN_VSX}/api/-/search?query=${encodeURIComponent(q)}&size=24&includeAllVersions=false`;
+  try {
+    const out = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    if (!out.ok) return res.status(502).json({ error: `Open VSX respondió ${out.status}` });
+    const data = await out.json();
+    const installed = new Set(installedExtensions().map((e) => e.id));
+    res.json({
+      extensions: (data.extensions || []).map((e) => ({
+        id: `${e.namespace}.${e.name}`,
+        displayName: e.displayName || e.name,
+        description: e.description || "",
+        publisher: e.namespace,
+        version: e.version,
+        downloads: e.downloadCount || 0,
+        rating: e.averageRating || null,
+        installed: installed.has(`${e.namespace}.${e.name}`),
+      })),
+    });
+  } catch (err) {
+    res.status(502).json({ error: `No se pudo consultar Open VSX: ${err.message}` });
+  }
+});
+
+async function downloadVsix(url, dest) {
+  const out = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(EXT_TIMEOUT_MS) });
+  if (!out.ok) throw new Error(`La descarga respondió ${out.status}`);
+  const length = Number(out.headers.get("content-length") || 0);
+  if (length > EXT_MAX_BYTES) throw new Error("El paquete pasa de 30 MB");
+
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of out.body) {
+    size += chunk.length;
+    // El content-length puede mentir o no venir: el tope se aplica al leer
+    if (size > EXT_MAX_BYTES) throw new Error("El paquete pasa de 30 MB");
+    chunks.push(chunk);
+  }
+  fs.writeFileSync(dest, Buffer.concat(chunks));
+}
+
+app.post("/api/extensions/install", async (req, res) => {
+  const id = typeof req.body.id === "string" ? req.body.id.trim() : "";
+  const bad = vsix.idError(id);
+  if (bad) return res.status(400).json({ error: bad });
+
+  const { publisher, name } = vsix.parseId(id);
+  const tmp = path.join(DATA_DIR, `.vsix-${crypto.randomUUID()}`);
+  const pkg = `${tmp}.vsix`;
+
+  try {
+    const meta = await fetch(`${OPEN_VSX}/api/${encodeURIComponent(publisher)}/${encodeURIComponent(name)}/latest`, {
+      signal: AbortSignal.timeout(20000),
+    });
+    if (meta.status === 404) return res.status(404).json({ error: `Open VSX no tiene ${id}` });
+    if (!meta.ok) return res.status(502).json({ error: `Open VSX respondió ${meta.status}` });
+
+    const info = await meta.json();
+    const url = info.files && info.files.download;
+    const urlBad = vsix.downloadUrlError(url || "");
+    if (urlBad) return res.status(502).json({ error: urlBad });
+
+    await downloadVsix(url, pkg);
+    fs.mkdirSync(tmp, { recursive: true });
+    // unzip de macOS: sin dependencias y ya rechaza las rutas que salen del destino
+    child_process.execFileSync("/usr/bin/unzip", ["-o", "-qq", pkg, "-d", tmp], { timeout: 120000 });
+
+    const manifest = vsix.readManifest(tmp);
+    if (manifest.id.toLowerCase() !== id.toLowerCase()) {
+      throw new Error(`El paquete dice ser ${manifest.id} y se pidió ${id}`);
+    }
+
+    fs.mkdirSync(EXT_DIR, { recursive: true });
+    fs.rmSync(extPath(id), { recursive: true, force: true });
+    fs.renameSync(tmp, extPath(id));
+
+    extState.disabled = extState.disabled.filter((x) => x !== id);
+    saveExtState();
+    broadcast("extensions:updated", extSnapshot());
+    res.json({ ok: true, extension: { ...manifest, id, enabled: true } });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  } finally {
+    fs.rmSync(pkg, { force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+app.post("/api/extensions/toggle", (req, res) => {
+  const body = req.body || {};
+  if (typeof body.id === "string") {
+    const bad = vsix.idError(body.id);
+    if (bad) return res.status(400).json({ error: bad });
+    if (!fs.existsSync(extPath(body.id))) return res.status(404).json({ error: "Esa extensión no está instalada" });
+    extState.disabled = body.enabled
+      ? extState.disabled.filter((x) => x !== body.id)
+      : [...new Set([...extState.disabled, body.id])];
+  }
+  // El tema y el icon theme van como {id, key}; null los quita
+  if ("theme" in body) extState.theme = body.theme || null;
+  if ("iconTheme" in body) extState.iconTheme = body.iconTheme || null;
+
+  saveExtState();
+  broadcast("extensions:updated", extSnapshot());
+  res.json(extSnapshot());
+});
+
+app.delete("/api/extensions", (req, res) => {
+  const id = typeof req.body.id === "string" ? req.body.id.trim() : "";
+  const bad = vsix.idError(id);
+  if (bad) return res.status(400).json({ error: bad });
+  fs.rmSync(extPath(id), { recursive: true, force: true });
+  extState.disabled = extState.disabled.filter((x) => x !== id);
+  if (extState.theme && extState.theme.id === id) extState.theme = null;
+  if (extState.iconTheme && extState.iconTheme.id === id) extState.iconTheme = null;
+  saveExtState();
+  broadcast("extensions:updated", extSnapshot());
+  res.json(extSnapshot());
+});
+
+// El tema pedido, ya traducido a lo que entiende monaco.editor.defineTheme.
+app.get("/api/extensions/theme", (req, res) => {
+  const id = typeof req.query.id === "string" ? req.query.id : "";
+  if (vsix.idError(id)) return res.status(400).json({ error: "Id de extensión no válido" });
+  try {
+    const dir = vsix.packageRoot(extPath(id));
+    const manifest = vsix.readManifest(extPath(id));
+    const wanted = String(req.query.key || "");
+    const theme = manifest.themes.find((t) => t.key === wanted) || manifest.themes[0];
+    if (!theme) return res.status(404).json({ error: "Esa extensión no trae temas" });
+    const file = path.resolve(dir, theme.path);
+    if (!safepath.isInside(fs.realpathSync(dir), fs.realpathSync(file))) {
+      return res.status(400).json({ error: "El tema apunta fuera de la extensión" });
+    }
+    res.json({ id, key: theme.key, label: theme.label, theme: vsix.themeToMonaco(vsix.loadThemeFile(file)) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// El índice del icon theme: extensión y nombre de archivo a ruta del icono, ya
+// relativas a la extensión, que es lo que pide /api/extensions/file.
+app.get("/api/extensions/icons", (req, res) => {
+  const id = typeof req.query.id === "string" ? req.query.id : "";
+  if (vsix.idError(id)) return res.status(400).json({ error: "Id de extensión no válido" });
+  try {
+    const dir = vsix.packageRoot(extPath(id));
+    const manifest = vsix.readManifest(extPath(id));
+    const wanted = String(req.query.key || "");
+    const theme = manifest.iconThemes.find((t) => t.key === wanted) || manifest.iconThemes[0];
+    if (!theme) return res.status(404).json({ error: "Esa extensión no trae iconos" });
+    const file = path.resolve(dir, theme.path);
+    const realDir = fs.realpathSync(dir);
+    if (!safepath.isInside(realDir, fs.realpathSync(file))) {
+      return res.status(400).json({ error: "Los iconos apuntan fuera de la extensión" });
+    }
+    res.json({ id, key: theme.key, label: theme.label, icons: vsix.iconThemeIndex(vsix.readJson(file), { file, root: realDir }) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Un archivo suelto del paquete: solo .json, .svg y .png, y solo si la ruta real
+// cae dentro de su carpeta. El SVG se pinta con <img>, nunca en línea.
+app.get("/api/extensions/file", (req, res) => {
+  const id = typeof req.query.id === "string" ? req.query.id : "";
+  const rel = typeof req.query.p === "string" ? req.query.p : "";
+  if (vsix.idError(id)) return res.status(400).json({ error: "Id de extensión no válido" });
+  const badPath = vsix.servableError(rel);
+  if (badPath) return res.status(400).json({ error: badPath });
+
+  try {
+    const dir = fs.realpathSync(vsix.packageRoot(extPath(id)));
+    const file = fs.realpathSync(path.resolve(dir, rel));
+    if (!safepath.isInside(dir, file) || !fs.statSync(file).isFile()) {
+      return res.status(403).json({ error: "Ese archivo no es de la extensión" });
+    }
+    res.type(vsix.CONTENT_TYPES[path.extname(file).toLowerCase()] || "application/octet-stream");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.send(fs.readFileSync(file));
+  } catch (_) {
+    res.status(404).json({ error: "No está ese archivo" });
+  }
+});
+
+// ---- Buscar en los archivos del proyecto ----
+// No hay ripgrep en la máquina, así que el recorrido es propio (search.js) y va
+// con los mismos topes que el editor: nada de archivos binarios ni de más de 2 MB.
+app.get("/api/search", (req, res) => {
+  const dir = insideProject(req.query.path);
+  if (!dir || !isDirectory(dir)) return res.status(403).json(FORBIDDEN);
+
+  const query = typeof req.query.q === "string" ? req.query.q : "";
+  const bad = search.queryError(query);
+  if (bad) return res.status(400).json({ error: bad });
+
+  const opts = {
+    regex: req.query.regex === "1",
+    caseSensitive: req.query.case === "1",
+    word: req.query.word === "1",
+    include: typeof req.query.include === "string" ? req.query.include : "",
+  };
+
+  try {
+    res.json(search.searchTree(dir, query, opts));
+  } catch (err) {
+    // Una expresión regular rota es cosa de quien la escribió, no un 500
+    res.status(opts.regex ? 400 : 500).json({ error: err.message });
+  }
+});
+
 app.post("/api/files/stat", (req, res) => {
   const paths = Array.isArray(req.body.paths) ? req.body.paths.slice(0, 50) : [];
   res.json(
