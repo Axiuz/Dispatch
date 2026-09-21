@@ -774,6 +774,21 @@ function upsertSession(session) {
   else sessions.push(session);
 }
 
+// El tema de la terminal se relee al mover el slider del velo, no solo al abrirla
+// Devuelve el tema para terminales, con fondo transparente si el velo está activado, de lo
+// contrario usa --editor-bg. Vale lo mismo que en Monaco: el color lo pone .terminal-host y
+// pintarlo dos veces multiplicaría los alfas.
+function termTheme() {
+  const veiled = !!(window.Veil && Veil.enabled());
+  return {
+    background: veiled ? "#00000000" : cssVar("--editor-bg"),
+    foreground: cssVar("--text-2"),
+    cursor: cssVar("--accent"),
+    cursorAccent: cssVar("--on-accent"),
+    selectionBackground: cssVar("--accent-line"),
+  };
+}
+
 // Una vista = un xterm atado a un nodo del DOM y, como mucho, a una sesión
 function createTerminalView(hostSelector) {
   let term = null;
@@ -806,6 +821,10 @@ function createTerminalView(hostSelector) {
     sessionId: null,
 
     size: () => (term ? { cols: term.cols, rows: term.rows } : { cols: 100, rows: 30 }),
+
+    retheme() {
+      if (term) term.options.theme = termTheme();
+    },
 
     focus() {
       if (term) term.focus();
@@ -844,13 +863,9 @@ function createTerminalView(hostSelector) {
         cursorBlink: true,
         scrollback: 5000,
         macOptionIsMeta: true,
-        theme: {
-          background: cssVar("--sunken"),
-          foreground: cssVar("--text-2"),
-          cursor: cssVar("--accent"),
-          cursorAccent: cssVar("--sunken"),
-          selectionBackground: cssVar("--accent-line"),
-        },
+        // Habilita la transparencia del fondo de la terminal para que el alfa del fondo se muestre correctamente en xterm
+        allowTransparency: true,
+        theme: termTheme(),
       });
       fitAddon = new FitAddon.FitAddon();
       term.loadAddon(fitAddon);
@@ -2462,6 +2477,61 @@ $("#saveConfigBtn").addEventListener("click", async () => {
   flash("#configSaved", "Guardado ✓");
   refreshStatus();
 });
+
+// Crea los controles de deslizadores para cada grupo del velo, añadiendo eventos para actualizar
+// los niveles en tiempo real. Hay tres y no uno porque una sola cifra no puede dar a la vez un
+// fondo casi invisible y unas tarjetas que se sigan leyendo.
+function buildVeilSliders(host) {
+  host.innerHTML = Veil.groups
+    .map(
+      (g) => `<div class="veil-row">
+        <span class="veil-name">${g.label}</span>
+        <input type="range" data-veil-level="${g.id}" min="${Math.round(Veil.MIN * 100)}" max="${Math.round(Veil.MAX * 100)}" step="1" />
+        <span class="mono small veil-pct" data-veil-pct="${g.id}">—</span>
+      </div>`
+    )
+    .join("");
+  host.querySelectorAll("[data-veil-level]").forEach((el) =>
+    el.addEventListener("input", (e) => {
+      Veil.set({ levels: { [e.target.dataset.veilLevel]: Number(e.target.value) / 100 } });
+      renderVeilControls();
+    })
+  );
+}
+
+// Actualiza la interfaz de control del velo: habilita o deshabilita el interruptor, carga los
+// deslizadores y muestra los porcentajes actuales
+function renderVeilControls() {
+  const box = $("#cfgVeil");
+  const host = $("#cfgVeilSliders");
+  box.checked = Veil.enabled();
+  box.disabled = !Veil.supported;
+  if (!host.children.length) buildVeilSliders(host);
+  const levels = Veil.levels();
+  Veil.groups.forEach((g) => {
+    const pct = Math.round(levels[g.id] * 100);
+    const slider = host.querySelector(`[data-veil-level="${g.id}"]`);
+    slider.value = pct;
+    slider.disabled = !Veil.enabled();
+    host.querySelector(`[data-veil-pct="${g.id}"]`).textContent = `${pct}%`;
+  });
+  $("#cfgVeilValue").textContent = Veil.supported ? "" : "Solo dentro de la app. ";
+}
+
+$("#cfgVeil").addEventListener("change", (e) => {
+  Veil.set({ on: e.target.checked });
+  renderVeilControls();
+});
+
+// Escucha el evento de cambio de opacidad del fondo para re-aplicar el tema en las terminales y editor:
+// Monaco y xterm leen las variables una sola vez, al crearse
+document.addEventListener("veil:change", () => {
+  sessionTerm.retheme();
+  dockTerm.retheme();
+  if (window.CodeEditor && CodeEditor.retheme) CodeEditor.retheme();
+});
+
+renderVeilControls();
 
 // ================= Diagnóstico =================
 // El informe vive en localStorage mientras corre: el último paso puede reiniciar

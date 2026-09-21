@@ -438,6 +438,12 @@ const CodeEditor = (() => {
     ["invalid", "--syn-invalid"],
   ];
 
+  const veilOn = () => !!(window.Veil && Veil.enabled());
+  // Retorna el fondo del editor: transparente si el velo está activado, de lo contrario usa el
+  // valor del CSS --editor-bg. Con el velo puesto el color ya lo pone .ed-host: si lo pintaran los
+  // dos, los dos alfas se multiplicarían y el editor quedaría casi opaco.
+  const codeBg = () => (veilOn() ? "#00000000" : cssVar("--editor-bg"));
+
   function defineTheme() {
     monaco.editor.defineTheme("dispatch", {
       base: "vs-dark",
@@ -446,9 +452,9 @@ const CodeEditor = (() => {
         fontStyle ? { token, foreground: hex(name), fontStyle } : { token, foreground: hex(name) }
       ),
       colors: {
-        "editor.background": cssVar("--sunken"),
+        "editor.background": codeBg(),
         "editor.foreground": cssVar("--code"),
-        "editorGutter.background": cssVar("--sunken"),
+        "editorGutter.background": codeBg(),
         "editorLineNumber.foreground": cssVar("--ghost"),
         "editorLineNumber.activeForeground": cssVar("--accent"),
         "editorCursor.foreground": cssVar("--accent"),
@@ -475,7 +481,7 @@ const CodeEditor = (() => {
         "editorSuggestWidget.background": cssVar("--panel"),
         "editorSuggestWidget.selectedBackground": cssVar("--panel-3"),
         "input.background": cssVar("--panel-2"),
-        "minimap.background": cssVar("--sunken"),
+        "minimap.background": codeBg(),
         "scrollbarSlider.background": cssVar("--border-strong"),
       },
     });
@@ -516,6 +522,13 @@ const CodeEditor = (() => {
   // Un tema de extensión pisa al de la app mientras esté activo; sin tema
   // vuelve "dispatch", que sale de las variables de :root.
   let vsixTheme = null;
+
+  // Reaplica el tema del editor, primero define el tema "dispatch" y luego aplica el tema de extensión si está activo
+  function retheme() {
+    if (!monaco) return;
+    defineTheme();
+    if (vsixTheme) applyTheme(vsixTheme);
+  }
 
   function applyTheme(def) {
     vsixTheme = def;
@@ -2015,6 +2028,7 @@ const CodeEditor = (() => {
     setRoot,
     openFile,
     applyTheme,
+    retheme,
     refreshIcons,
     rootPath: () => root,
     refreshGit: () => loadGitMarks({ force: true }),

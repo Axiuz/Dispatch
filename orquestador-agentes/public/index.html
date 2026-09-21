@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="veil.js"></script>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
 <link rel="stylesheet" href="styles.css" />
 </head>
@@ -311,6 +312,16 @@
               <span class="tlabel">MANDAR MIS TARJETAS DEL TABLERO A CLAUDE</span>
             </label>
             <div class="help">Remote Control se aplica a las sesiones que se abran después de guardar. Las tarjetas escritas o movidas a mano llegan a Claude al terminar su turno, o escritas en la sesión si está parado.</div>
+          </div>
+          <div>
+            <label class="field-label">APARIENCIA</label>
+            <label class="toggle">
+              <input type="checkbox" id="cfgVeil" />
+              <span class="track"></span>
+              <span class="tlabel">FONDO TRANSLÚCIDO</span>
+            </label>
+            <div id="cfgVeilSliders" class="veil-sliders"></div>
+            <div class="help"><span id="cfgVeilValue"></span>El desenfoque lo pone la ventana de macOS y cada slider decide cuánto la tapa una capa: a la izquierda se ve más el escritorio, y en 0% la capa desaparece. Fondo es el lienzo de la app, Paneles son las tarjetas y Código es el editor y las terminales. Se guarda en este Mac, no en config.json, y se aplica sin darle a Guardar.</div>
           </div>
           <div class="info-box">
             <span class="field-label">ESTADO DEL SERVIDOR</span>
