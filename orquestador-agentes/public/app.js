@@ -1404,6 +1404,8 @@ let gitMenu = null;      // menú flotante abierto, si hay alguno
 let gitPlan = null;      // plan de commits del repositorio de delante
 let gitPasting = false;  // está abierta la caja de pegar el plan
 let gitPasteDraft = "";  // lo que lleva escrito esa caja
+let gitError = null;     // último fallo de git, para la franja de la tarjeta
+let gitErrorOpen = false; // el detalle de esa franja, desplegado o no
 
 // La carpeta del dock manda; si todavía no hay ninguna sesión abierta se enseña
 // el último proyecto, que es lo que el usuario tiene delante en el carril izquierdo
@@ -1468,6 +1470,21 @@ function setDraft(text, { render = true } = {}) {
   } catch (_) {}
   if (render) renderGit();
 }
+
+// Actualiza el error de git que enseña la tarjeta de Control de código. Antes esto era un
+// diálogo del sistema con la salida entera de git, que tapaba el panel y había que cerrar.
+// El detalle solo se guarda si añade algo al texto principal.
+function setGitError(text, detail = "") {
+  gitError = text ? { text, detail: detail && detail !== text ? detail : "" } : null;
+  gitErrorOpen = false;
+  renderGit();
+}
+
+// Se llama al empezar cualquier operación: el fallo de la anterior ya no viene al caso.
+const clearGitError = () => {
+  gitError = null;
+  gitErrorOpen = false;
+};
 
 async function loadGit({ refresh = false, force = false } = {}) {
   const dir = gitDir();
@@ -1545,6 +1562,16 @@ async function applyPlanCommit(index, { andCommit = false } = {}) {
   }
   if (!andCommit) return renderGit();
 
+  // Un commit del plan cuyos archivos ya no traen cambios no llega a git: respondería con
+  // toda su ayuda de "usa git add" sin aclarar nada. Se avisa aquí y se ofrece quitarlo del
+  // plan, que es lo que uno quiere cuando ese commit ya está hecho.
+  const staged = (gitInfo?.files || []).filter((f) => f.staged);
+  if (!staged.length) {
+    setGitError(`"${entry.title}" no tiene nada que commitear: sus archivos ya no traen cambios.`);
+    if (confirm(`Los archivos de "${entry.title}" no tienen cambios.\n\n¿Quitarlo del plan?`)) await dropPlanCommit(index);
+    return;
+  }
+
   const done = await gitRun(() => api("/api/git/commit", { path: gitDir(), message: entry.message, amend: false, all: false, then: null }));
   if (done && done.ok) {
     setDraft("", { render: false });
@@ -1556,7 +1583,7 @@ async function dropPlanCommit(index) {
   try {
     gitPlan = await api("/api/git/plan", { path: gitDir(), index }, "DELETE");
   } catch (err) {
-    return alert(err.message);
+    return setGitError(err.message);
   }
   renderGit();
 }
@@ -1566,7 +1593,7 @@ async function clearGitPlan() {
   try {
     gitPlan = await api("/api/git/plan", { path: gitDir() }, "DELETE");
   } catch (err) {
-    return alert(err.message);
+    return setGitError(err.message);
   }
   renderGit();
 }
@@ -1578,7 +1605,7 @@ async function saveGitPlan(text) {
   try {
     gitPlan = await api("/api/git/plan", { path: gitDir(), text });
   } catch (err) {
-    return alert(err.message);
+    return setGitError(err.message);
   }
   gitPasting = false;
   gitPasteDraft = "";
@@ -1782,6 +1809,16 @@ function renderGit() {
     )
     .join("");
 
+  const errorBox = gitError
+    ? `<div class="git-error">
+         <div class="git-error-head">
+           <span class="git-error-text">${escapeHtml(gitError.text)}</span>
+           <button class="git-error-close" data-git-error-close title="Descartar">✕</button>
+         </div>
+         ${gitError.detail ? `<details class="git-error-detail"${gitErrorOpen ? " open" : ""}><summary>ver detalle</summary><pre class="mono">${escapeHtml(gitError.detail)}</pre></details>` : ""}
+       </div>`
+    : "";
+
   const branchRow = `
     <div class="git-branch-row${gitInfo.detached ? " detached" : ""}">
       <span class="git-branch-dot" aria-hidden="true"></span>
@@ -1795,6 +1832,7 @@ function renderGit() {
   card.innerHTML =
     head() +
     branchRow +
+    errorBox +
     `
     ${remoteSection()}
     ${planSection()}
@@ -1853,6 +1891,15 @@ function renderGit() {
     btn.addEventListener("click", () => gitRun(() => api("/api/git/checkout", { path: gitDir(), branch: btn.dataset.gitSwitch })));
   });
   card.querySelector("[data-git-sync]").addEventListener("click", () => doSync());
+  card.querySelector("[data-git-error-close]")?.addEventListener("click", () => {
+    clearGitError();
+    renderGit();
+  });
+  // El detalle desplegado se recuerda: la tarjeta se repinta sola con el sondeo de 5 s y si no
+  // se cerraría mientras lo estás leyendo.
+  card.querySelector(".git-error-detail")?.addEventListener("toggle", (e) => {
+    gitErrorOpen = e.currentTarget.open;
+  });
   card.querySelector("[data-git-primary]").addEventListener("click", () => runGitPrimary());
   card.querySelector("[data-git-commit-menu]").addEventListener("click", (e) => openCommitMenu(e.currentTarget));
 
@@ -1927,15 +1974,16 @@ function growMsg(el) {
 async function gitRun(call) {
   if (gitBusy) return null;
   closeGitMenu();
+  clearGitError();
   gitBusy = true;
   renderGit();
   let data = null;
   try {
     data = await call();
     if (data && data.git) gitInfo = data.git;
-    if (data && data.ok === false) alert(data.output || "git no pudo completar la operación.");
+    if (data && data.ok === false) setGitError(data.summary || data.output || "git no pudo completar la operación", data.output || "");
   } catch (err) {
-    alert(err.message);
+    setGitError(err.message);
   } finally {
     gitBusy = false;
     renderGit();
@@ -1948,14 +1996,14 @@ async function doCommit(kind) {
   if (gitBusy) return;
   const message = gitDraft.trim();
   const amend = kind === "amend";
-  if (!message && !amend) return alert("Escribe un mensaje de commit.");
+  if (!message && !amend) return setGitError("Escribe un mensaje de commit.");
 
   const files = gitInfo?.files || [];
   const staged = files.filter((f) => f.staged);
   const tracked = files.filter((f) => !f.untracked);
   // Sin nada preparado, se commitean todos los cambios rastreados, como VS Code
   const all = staged.length === 0;
-  if (all && !tracked.length && !amend) return alert("No hay cambios que commitear.");
+  if (all && !tracked.length && !amend) return setGitError("No hay cambios que commitear.");
   if (all && tracked.length && !confirm(`No hay nada preparado.\n\n¿Commitear los ${tracked.length} archivos cambiados del árbol de trabajo?`)) return;
   if (amend && !confirm("Se va a rehacer el último commit (amend).\n\nSi ya lo habías subido, el push siguiente necesitará --force desde la terminal. ¿Seguir?")) return;
 
@@ -2010,7 +2058,7 @@ async function openBranchMenu(anchor) {
   try {
     data = await api(`/api/git/branches?path=${encodeURIComponent(dir)}`);
   } catch (err) {
-    return alert(err.message);
+    return setGitError(err.message);
   }
   const local = data.local || [];
   const remote = data.remote || [];

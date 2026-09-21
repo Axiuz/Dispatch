@@ -639,6 +639,26 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   font-size: 12px; line-height: 1; padding: 3px 4px; border-radius: 5px;
 }
 .git-sync:hover { background: var(--panel-2); color: var(--accent); }
+.git-error {
+  background: var(--red-soft); border: 1px solid var(--red-line);
+  border-left-width: 3px; border-radius: 6px; padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.git-error-head { display: flex; align-items: flex-start; gap: 8px; }
+.git-error-text { flex: 1; font-size: 11px; color: var(--red); line-height: 1.4; word-break: break-word; }
+.git-error-close {
+  flex: none; background: none; border: 0; color: var(--faint); cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 1px 3px; border-radius: 4px;
+}
+.git-error-close:hover { color: var(--text-2); background: var(--panel-2); }
+.git-error-detail summary { font-size: 10px; color: var(--faint); cursor: pointer; }
+.git-error-detail summary:hover { color: var(--text-2); }
+.git-error-detail pre {
+  margin: 5px 0 0; padding: 6px; max-height: 160px; overflow: auto;
+  background: var(--sunken); border-radius: 5px;
+  font-size: 10px; line-height: 1.45; color: var(--muted); white-space: pre-wrap; user-select: text;
+}
+
 /* Mientras corre una operación la tarjeta no acepta más clics */
 .git-card.busy { opacity: 0.6; pointer-events: none; }
 
