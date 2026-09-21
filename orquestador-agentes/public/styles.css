@@ -1032,6 +1032,58 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .map-overlay .plan-empty-text { max-width: 420px; }
 .map-overlay.busy { background: rgba(16, 18, 22, 0.82); }
 
+/* ---------- Pestaña Preview: web en vivo y emuladores ---------- */
+.prev-head { display: flex; align-items: center; gap: 10px; flex: none; }
+.prev-sections button, .prev-modes button, .prev-widths button { padding: 6px 13px; }
+.prev-head .push { margin-left: auto; }
+
+.prev-bar { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; }
+.prev-bar[hidden] { display: none; }
+.prev-url {
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 7px 11px; font-size: 12px; flex: 1; min-width: 160px;
+}
+.prev-url:focus { outline: none; border-color: var(--accent-line); }
+
+.prev-body { display: flex; flex: 1; min-height: 0; }
+.prev-stage {
+  position: relative; flex: 1; min-width: 0; border-radius: 11px; overflow: hidden;
+  background: var(--sunken); border: 1px solid var(--border-soft);
+  display: flex; justify-content: center;
+}
+.prev-stage[hidden] { display: none; }
+.prev-stage iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.prev-stage[data-width="phone"] iframe { width: 390px; }
+.prev-stage[data-width="tablet"] iframe { width: 820px; }
+.prev-overlay {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 8px; text-align: center; padding: 0 40px;
+  background: var(--sunken); color: var(--muted);
+}
+.prev-overlay[hidden] { display: none; }
+
+.prev-android { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; }
+.prev-android[hidden] { display: none; }
+.prev-sec {
+  font-size: 9.5px; letter-spacing: 0.7px; text-transform: uppercase; color: var(--muted);
+  padding: 12px 2px 6px;
+}
+.prev-row {
+  display: flex; align-items: center; gap: 9px; padding: 9px 11px; margin-bottom: 6px;
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: 9px;
+  font-size: 12.5px; color: var(--text-2);
+}
+.prev-row.off { opacity: 0.6; }
+.prev-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ghost); flex: none; }
+.prev-dot.on { background: var(--green); }
+.prev-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.prev-sub { font-size: 10.5px; color: var(--faint); font-family: var(--mono); }
+.prev-acts { flex: none; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.prev-empty {
+  font-size: 12px; color: var(--faint); line-height: 1.6; padding: 10px 2px;
+}
+.prev-empty code { font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+
 .map-legend {
   position: absolute; left: 12px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 4px 12px;
   max-width: 70%; pointer-events: none;
@@ -1077,19 +1129,12 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .dock .rail-head { align-items: center; }
 .dock-head { user-select: none; gap: 8px; padding: 2px 0; }
 
-/* Pestañas del dock: la misma caja enseña la terminal o las notas */
-.dock-tabs { display: flex; gap: 2px; min-width: 0; }
-.dock-tab {
-  background: none; border: none; cursor: pointer; padding: 3px 7px; border-radius: 6px;
-  font-family: inherit; font-size: 10.5px; letter-spacing: 0.8px; font-weight: 600;
-  color: var(--faint); display: flex; align-items: center; gap: 5px; white-space: nowrap;
+.dock-title {
+  background: none; border: none; cursor: pointer; padding: 3px 7px 3px 0;
+  font-family: inherit; text-align: left;
 }
-.dock-tab:hover { color: var(--text-2); background: var(--panel); }
-.dock-tab.active { color: var(--accent); background: var(--accent-soft); }
-.dock-tab:focus-visible { outline: 1px solid var(--accent-line); outline-offset: 1px; }
-.dock-tab-count { font-family: var(--mono); font-size: 10px; color: var(--muted); }
-.dock-tab.active .dock-tab-count { color: var(--accent); }
-.dock-tab-count:empty { display: none; }
+.dock-title:hover { color: var(--text-2); }
+.dock-title:focus-visible { outline: 1px solid var(--accent-line); outline-offset: 1px; border-radius: 6px; }
 
 .dock-collapse {
   background: none; border: none; cursor: pointer; color: var(--faint);
@@ -1112,48 +1157,6 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   font-size: 11.5px; color: var(--faint); background: var(--sunken);
   border: 1px dashed var(--border-dashed); border-radius: 9px; padding: 12px;
 }
-/* ---------- Notas y to-dos del dock ---------- */
-/* Comparten caja con la terminal: lo que cambia es cuál de los dos se enseña */
-.notes-pane { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 7px; padding: 8px 2px 2px 0; }
-.notes-new { display: flex; gap: 6px; }
-.notes-new input {
-  flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--border);
-  border-radius: 7px; padding: 7px 10px; color: var(--text); font-family: inherit; font-size: 12px;
-}
-.notes-new input:focus { outline: none; border-color: var(--accent-line); }
-.notes-new .btn { padding: 6px 11px; }
-
-.notes-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
-.note {
-  display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px;
-  background: var(--panel); border: 1px solid var(--border-soft); border-radius: 8px;
-}
-.note:hover { border-color: var(--border); }
-/* Se establece ancho y padding específico para evitar que la casilla herede el ancho de la fila y mantenga el tamaño adecuado para el diseño de notas. */
-.note input[type="checkbox"] {
-  width: 14px; height: 14px; padding: 0; margin: 2px 0 0; border: 0; background: none;
-  accent-color: var(--accent); cursor: pointer; flex: none;
-}
-.note-text {
-  flex: 1; min-width: 0; font-size: 12px; line-height: 1.5; color: var(--text-2);
-  white-space: pre-wrap; overflow-wrap: anywhere; cursor: text;
-}
-.note.done .note-text { color: var(--ghost); text-decoration: line-through; }
-.note-edit {
-  flex: 1; min-width: 0; background: var(--sunken); border: 1px solid var(--accent-line);
-  border-radius: 6px; padding: 5px 7px; color: var(--text); font-family: inherit;
-  font-size: 12px; line-height: 1.5; resize: vertical;
-}
-.note-edit:focus { outline: none; }
-.note-del { opacity: 0; flex: none; }
-.note:hover .note-del, .note-del:focus-visible { opacity: 1; }
-
-.notes-empty {
-  margin: auto; text-align: center; font-size: 11.5px; color: var(--faint);
-  line-height: 1.5; padding: 10px;
-}
-.notes-foot { display: flex; align-items: center; gap: 10px; font-size: 10.5px; color: var(--faint); min-height: 14px; }
-.notes-foot:empty { display: none; }
 
 .dock-grip { height: 7px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; }
 .dock-grip::after { content: ""; width: 34px; height: 3px; border-radius: 2px; background: var(--border-strong); }
@@ -1201,6 +1204,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .ed-act:hover { background: var(--panel); color: var(--text-2); }
 .ed-act.active { color: var(--accent); background: var(--accent-soft); }
 .ed-act-more { margin-left: auto; }
+.ed-act-badge {
+  position: absolute; right: 1px; bottom: 1px; min-width: 13px; padding: 0 3px;
+  border-radius: 7px; background: var(--accent); color: var(--bg);
+  font-family: var(--mono); font-size: 9px; line-height: 13px; text-align: center;
+}
 .ed-ico { display: block; }
 
 .ed-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -1322,6 +1330,9 @@ button.ed-status-item {
   font-family: inherit; font-size: inherit; padding: 1px 5px; border-radius: 4px;
 }
 button.ed-status-item:hover { background: var(--panel); color: var(--accent); }
+button.ed-status-branch { display: flex; align-items: center; gap: 4px; }
+.ed-status-branch .ed-ico { width: 12px; height: 12px; }
+.ed-status-track { color: var(--muted); }
 
 /* Vista Buscar */
 .ed-search { display: flex; flex-direction: column; gap: 5px; padding: 0 8px 7px; flex: none; }
@@ -1382,6 +1393,38 @@ button.ed-status-item:hover { background: var(--panel); color: var(--accent); }
 .ed-note-del .ed-ico { width: 10px; height: 10px; }
 .ed-note:hover .ed-note-del { opacity: 1; }
 .ed-note-del:hover { color: var(--red); background: var(--panel-3); }
+.ed-note-edit {
+  flex: 1; min-width: 0; background: var(--sunken); border: 1px solid var(--accent-line);
+  border-radius: 6px; padding: 3px 6px; color: var(--text); font-family: inherit;
+  font-size: 12px; line-height: 1.45; resize: vertical;
+}
+.ed-note-edit:focus { outline: none; }
+.ed-notes-foot {
+  flex: none; display: flex; align-items: center; gap: 8px; padding: 5px 8px 8px;
+  font-size: 10.5px; color: var(--faint); border-top: 1px solid var(--border-soft);
+}
+.ed-notes-foot:empty { display: none; }
+.ed-notes-foot .ed-chip { margin-left: auto; }
+
+/* Vista Ramas: las ramas del repositorio y las carpetas de trabajo (worktrees) */
+.ed-branches { flex: 1; overflow: auto; min-height: 0; padding: 0 8px 12px; }
+.ed-branch {
+  display: flex; align-items: center; gap: 7px; padding: 5px 4px; min-width: 0;
+  font-size: 12px; color: var(--text-2); border-radius: 6px;
+}
+.ed-branch:hover { background: var(--panel); }
+.ed-branch.here { color: var(--text); }
+.ed-branch-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.ed-branch-name {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ed-branch-sub { font-size: 10px; color: var(--ghost); font-family: var(--mono); }
+.ed-branch-track { flex: none; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.ed-branch-here { flex: none; font-size: 10px; color: var(--accent); font-family: var(--mono); }
+.ed-branch-acts { flex: none; display: flex; gap: 3px; opacity: 0; }
+.ed-branch:hover .ed-branch-acts, .ed-branch-acts:focus-within { opacity: 1; }
+.ed-branch.here .ed-branch-acts { opacity: 1; }
 
 /* Vista Extensiones: instaladas y búsqueda en Open VSX */
 .ed-ext-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }

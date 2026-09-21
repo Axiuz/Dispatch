@@ -61,6 +61,7 @@
       <button class="tab-btn" data-tab="editor">Editor</button>
       <button class="tab-btn" data-tab="sesion">Sesión <span class="tab-count" id="sessionCount"></span></button>
       <button class="tab-btn" data-tab="mapa">Mapa</button>
+      <button class="tab-btn" data-tab="preview">Preview <span class="tab-count" id="previewCount"></span></button>
       <button class="tab-btn" data-tab="agentes">Agentes</button>
       <button class="tab-btn" data-tab="consola">Consola</button>
       <button class="tab-btn" data-tab="conexion">Conexión</button>
@@ -166,6 +167,47 @@
           </div>
         </div>
         <aside class="map-inspector" id="mapInspector"></aside>
+      </div>
+    </section>
+
+    <!-- ============ PREVIEW: web en vivo y emuladores ============ -->
+    <section id="tab-preview" class="tab-panel">
+      <div class="prev-head">
+        <div class="segmented prev-sections" id="prevSections">
+          <button data-section="web" class="active">Web</button>
+          <button data-section="android">Android</button>
+        </div>
+        <span class="mono muted small push" id="prevState"></span>
+      </div>
+
+      <div class="prev-bar" id="prevBar">
+        <select id="prevProject" class="map-select"></select>
+        <div class="segmented prev-modes" id="prevMode">
+          <button data-mode="server" class="active">Servidor propio</button>
+          <button data-mode="url">URL externa</button>
+        </div>
+        <input id="prevUrl" class="prev-url mono" type="text" spellcheck="false"
+               placeholder="http://localhost:5173" />
+        <button class="btn" id="prevReloadBtn" title="Recargar la vista">⟳</button>
+        <div class="segmented prev-widths" id="prevWidth">
+          <button data-width="phone" title="390 px">Móvil</button>
+          <button data-width="tablet" title="820 px">Tablet</button>
+          <button data-width="full" class="active" title="Todo el ancho">Ancho</button>
+        </div>
+        <button class="btn" id="prevStopBtn" title="Parar el servidor de este proyecto" hidden>Parar</button>
+        <button class="btn" id="prevBrowserBtn" title="Abrirlo en el navegador">Navegador</button>
+        <button class="btn" id="prevDeviceBtn" title="Abrirlo dentro del emulador">Emulador</button>
+      </div>
+
+      <div class="prev-body">
+        <div class="prev-stage" id="prevStage">
+          <iframe id="prevFrame" title="Vista previa"></iframe>
+          <div class="prev-overlay" id="prevOverlay">
+            <span class="plan-empty-title">Sin nada que enseñar</span>
+            <span class="plan-empty-text">Elige un proyecto arriba y el panel lo sirve en un puerto local, o escribe la URL del servidor que ya tengas levantado.</span>
+          </div>
+        </div>
+        <div class="prev-android" id="prevAndroid" hidden></div>
       </div>
     </section>
 
@@ -308,14 +350,7 @@
          Code de la pestaña Sesión. La cabecera entera pliega el dock. -->
     <div class="dock" id="terminalDock">
       <div class="rail-head dock-head" id="dockHead">
-        <div class="dock-tabs" role="tablist">
-          <button class="dock-tab active" id="dockTabTerminal" data-dock="terminal" role="tab"
-                  aria-selected="true" title="Terminal de la carpeta activa">TERMINAL</button>
-          <button class="dock-tab" id="dockTabNotes" data-dock="notas" role="tab"
-                  aria-selected="false" title="Notas y to-dos de la carpeta activa">
-            NOTAS <span class="dock-tab-count" id="notesCount"></span>
-          </button>
-        </div>
+        <button class="dock-title eyebrow" id="dockTitleBtn" title="Plegar o desplegar">TERMINAL</button>
         <span class="dock-state mono small" id="dockState"></span>
         <button class="dock-collapse" id="dockCollapseBtn" aria-expanded="true"
                 title="Plegar o desplegar">⌄</button>
@@ -325,16 +360,6 @@
         <div class="dock-empty" id="dockEmpty">
           <span id="dockEmptyText">Sin carpeta abierta.</span>
           <button class="link-btn" id="dockOpenBtn">Abrir un proyecto</button>
-        </div>
-
-        <div class="notes-pane" id="notesPane" hidden>
-          <form class="notes-new" id="notesForm">
-            <input id="notesInput" type="text" maxlength="4000" autocomplete="off"
-                   placeholder="Nota o to-do…" />
-            <button class="btn" type="submit" title="Añadir">+</button>
-          </form>
-          <div class="notes-list" id="notesList"></div>
-          <div class="notes-foot" id="notesFoot"></div>
         </div>
       </div>
       <div class="dock-grip" id="dockGrip" title="Arrastra para cambiar el alto"></div>
@@ -362,6 +387,7 @@
 <script src="branchcolor.js"></script>
   <script src="app.js"></script>
 <script src="graph.js"></script>
+<script src="preview.js"></script>
 <script src="edicons.js"></script>
 <script src="editor.js"></script>
 <script src="extensions.js"></script>
