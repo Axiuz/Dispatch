@@ -32,13 +32,19 @@ const SUBJECT_MIN = 24;
 
 // Encabezados de bloque. Se aceptan con y sin acento, numerados ("COMMIT 2:") y
 // con el valor en la misma línea ("ARCHIVOS: a.js, b.js").
-const HEAD_COMMIT = /^\s*commit\s*(?:#?\d+)?\s*[:.\-—]?\s*(.*)$/i;
-const HEAD_FILES = /^\s*archivos?\s*[:.\-—]?\s*(.*)$/i;
-const HEAD_MESSAGE = /^\s*mensaje\s*[:.\-—]?\s*(.*)$/i;
+//
+// BORDE: la palabra solo es encabezado si le sigue un separador, un espacio o el
+// fin de línea. Sin eso, una línea del mensaje que empezara por "archivos) y…"
+// —el mensaje partido en dos por el modelo— se leía como la lista de archivos y
+// el resto del párrafo acababa en `git add`, partido por comas.
+const BORDE = "(?=\\s|[:.\\-—]|$)";
+const HEAD_COMMIT = new RegExp(`^\\s*commit\\s*(?:#?\\d+)?${BORDE}\\s*[:.\\-—]?\\s*(.*)$`, "i");
+const HEAD_FILES = new RegExp(`^\\s*archivos?${BORDE}\\s*[:.\\-—]?\\s*(.*)$`, "i");
+const HEAD_MESSAGE = new RegExp(`^\\s*mensaje${BORDE}\\s*[:.\\-—]?\\s*(.*)$`, "i");
 const HEAD_END = /^\s*fin\s*[.:]?\s*$/i;
 // El prompt del documenter le ofrece CUERPO para lo que no cabe en el asunto.
 // Sin reconocerlo aquí, la palabra "CUERPO:" acababa dentro del mensaje.
-const HEAD_BODY = /^\s*cuerpos?\s*[:.\-—]?\s*(.*)$/i;
+const HEAD_BODY = new RegExp(`^\\s*cuerpos?${BORDE}\\s*[:.\\-—]?\\s*(.*)$`, "i");
 const FENCE = /^\s*```/;
 const BULLET = /^\s*[-*•]\s+/;
 

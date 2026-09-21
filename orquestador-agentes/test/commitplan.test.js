@@ -216,3 +216,52 @@ CUERPO: hace falta para el botón
 FIN`);
   assert.equal(commit.message, "detecta el remoto\n\nhace falta para el botón");
 });
+
+test("una línea del mensaje que empieza por 'archivos)' se queda en el mensaje y no añade archivos", () => {
+  const text = `
+COMMIT: actualiza el estado
+MENSAJE:
+archivos) a.js, b.js
+FIN`;
+  assert.deepEqual(parseCommitPlan(text), [
+    { title: "actualiza el estado", files: [], message: "archivos) a.js, b.js" },
+  ]);
+});
+
+test("una línea del mensaje que empieza por 'commit,' no abre un bloque nuevo", () => {
+  const text = `
+COMMIT: ajusta el diseño
+MENSAJE:
+commit, con cambios
+FIN`;
+  assert.deepEqual(parseCommitPlan(text), [
+    { title: "ajusta el diseño", files: [], message: "commit, con cambios" },
+  ]);
+});
+
+test("ARCHIVOS: a.js, b.js en la misma línea del encabezado se sigue leyendo como dos archivos", () => {
+  const text = `
+COMMIT: mejora el formulario
+ARCHIVOS: a.js, b.js
+MENSAJE:
+Mejora el formulario
+FIN`;
+  assert.deepEqual(parseCommitPlan(text), [
+    { title: "mejora el formulario", files: ["a.js", "b.js"], message: "Mejora el formulario" },
+  ]);
+});
+
+test("el mensaje partido en dos líneas no se lleva el párrafo a la lista de archivos", () => {
+  const text = `
+COMMIT: Expone buscar, extensiones y herramientas en el servidor
+ARCHIVOS:
+orquestador-agentes/server.js
+.gitignore
+MENSAJE:
+Anade /api/search, /api/extensions (buscar, instalar, tema, iconos y
+archivos) y /api/tools (catalogo, run y format).
+FIN`;
+  const [commit] = parseCommitPlan(text);
+  assert.deepEqual(commit.files, ["orquestador-agentes/server.js", ".gitignore"]);
+  assert.match(commit.message, /archivos\) y \/api\/tools/);
+});
