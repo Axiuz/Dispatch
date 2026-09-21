@@ -8,7 +8,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { parseBranchLine, parseTrack, parseStatus, parseLog, parseBranches, markUnpushed, branchNameError, relPathError, commitArgs, checkoutArgs, isLockError, remoteUrlError, remoteNameError, repoNameError, parseRemotes } = require("../git");
+const { parseBranchLine, parseTrack, parseStatus, parseLog, parseBranches, markUnpushed, branchNameError, relPathError, commitArgs, checkoutArgs, isLockError, remoteUrlError, remoteNameError, repoNameError, parseRemotes, cloneNameFromUrl, cloneArgs } = require("../git");
 
 const FIELD = "\x1f";
 const RECORD = "\x1e";
@@ -443,4 +443,53 @@ test("cada remoto sale una sola vez aunque tenga fetch y push", () => {
 test("sin remotos la lista viene vacía", () => {
   assert.deepEqual(parseRemotes(""), []);
   assert.deepEqual(parseRemotes("basura sin formato"), []);
+});
+
+
+test("el nombre por defecto sale del último segmento, con o sin .git", () => {
+  assert.equal(cloneNameFromUrl("https://github.com/octocat/Hello-World.git"), "Hello-World");
+  assert.equal(cloneNameFromUrl("https://github.com/octocat/Hello-World"), "Hello-World");
+});
+
+test("la forma scp también da el repositorio, no el dueño", () => {
+  assert.equal(cloneNameFromUrl("git@github.com:octocat/Hello-World.git"), "Hello-World");
+  assert.equal(cloneNameFromUrl("git@github.com:Hello-World.git"), "Hello-World");
+});
+
+test("ssh:// se trata como cualquier otra url con esquema", () => {
+  assert.equal(cloneNameFromUrl("ssh://git@github.com/octocat/Hello-World.git"), "Hello-World");
+});
+
+test("la barra final, el query y el fragmento no cuentan", () => {
+  assert.equal(cloneNameFromUrl("https://github.com/octocat/Hello-World/"), "Hello-World");
+  assert.equal(cloneNameFromUrl("https://github.com/octocat/Hello-World.git?ref=x#y"), "Hello-World");
+});
+
+test("una url sin repositorio no da nombre", () => {
+  assert.equal(cloneNameFromUrl(""), null);
+  assert.equal(cloneNameFromUrl("   "), null);
+  assert.equal(cloneNameFromUrl("https://github.com"), null);
+  assert.equal(cloneNameFromUrl("https://github.com/"), null);
+});
+
+test("un nombre que sería '.' o '..' se descarta", () => {
+  assert.equal(cloneNameFromUrl("https://github.com/octocat/."), null);
+  assert.equal(cloneNameFromUrl("https://github.com/octocat/.."), null);
+});
+
+test("el clone más simple lleva la url detrás de '--'", () => {
+  assert.deepEqual(cloneArgs({ url: "https://github.com/a/b.git" }), ["clone", "--", "https://github.com/a/b.git"]);
+});
+
+test("el nombre de la carpeta va al final y la rama delante", () => {
+  assert.deepEqual(cloneArgs({ url: "https://github.com/a/b.git", name: "b" }), ["clone", "--", "https://github.com/a/b.git", "b"]);
+  assert.deepEqual(cloneArgs({ url: "https://github.com/a/b.git", name: "b", branch: "dev" }), ["clone", "--branch", "dev", "--", "https://github.com/a/b.git", "b"]);
+});
+
+test("una url con pinta de bandera queda detrás de '--'", () => {
+  assert.deepEqual(cloneArgs({ url: "--upload-pack=touch /tmp/x" }), ["clone", "--", "--upload-pack=touch /tmp/x"]);
+});
+
+test("los espacios de sobra no llegan a los argumentos", () => {
+  assert.deepEqual(cloneArgs({ url: "  https://github.com/a/b.git  ", name: "  b  ", branch: "  dev  " }), ["clone", "--branch", "dev", "--", "https://github.com/a/b.git", "b"]);
 });

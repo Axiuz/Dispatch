@@ -16,6 +16,7 @@ const MAX_COMMITS = 30;
 const GIT_TIMEOUT_MS = 5000;
 const MAX_BUFFER = 4 * 1024 * 1024;
 const NET_TIMEOUT_MS = 60000;
+const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const LOCK_RETRY_MS = 300;
 
 // Nada puede quedarse esperando a que alguien escriba: un push que pide
@@ -411,6 +412,25 @@ function repoNameError(name) {
   return null;
 }
 
+// Extrae el nombre del repositorio de la URL, eliminando parámetros y sufijos como .git.
+// Devuelve null si no se puede inferir un nombre válido, ya que el servidor valida el nombre final.
+// El nombre se basa en el último segmento de la ruta, sin el sufijo .git, y solo si no es . o ..
+function cloneNameFromUrl(url) {
+  const clean = String(url || "").trim().replace(/[?#].*$/, "").replace(/\/+$/, "");
+  if (!clean) return null;
+
+  const scheme = clean.match(SCHEME);
+  let rest;
+  if (scheme) rest = clean.slice(scheme[0].length).split("/").slice(1).join("/");
+  else if (SCP_LIKE.test(clean)) rest = splitOnce(clean, ":")[1] || "";
+  else rest = clean;
+
+  const last = rest.split("/").filter(Boolean).pop() || "";
+  const name = last.replace(/\.git$/i, "").trim();
+  if (!name || name === "." || name === "..") return null;
+  return name;
+}
+
 // Analiza la salida de 'git remote -v' para extraer los remotos válidos (nombre, URL, tipo fetch/push),
 // guardándolos en un mapa para evitar duplicados. Devuelve un array con los remotos únicos y válidos.
 function parseRemotes(stdout) {
@@ -440,6 +460,19 @@ function checkoutArgs({ branch, create = false, track = false } = {}) {
   // `switch --track origin/x` crea la local "x" siguiendo a la remota
   if (track) return ["switch", "--track", name];
   return ["switch", name];
+}
+
+// Construye los argumentos de git clone con el nombre y rama especificados.
+// El "--" siempre va antes de la URL para evitar que git interprete cualquier parte como bandera suya.
+// Si no se da nombre se omite, y git usa el que saque de la propia URL.
+function cloneArgs({ url, name = "", branch = "" } = {}) {
+  const args = ["clone"];
+  const b = String(branch || "").trim();
+  if (b) args.push("--branch", b);
+  args.push("--", String(url || "").trim());
+  const n = String(name || "").trim();
+  if (n) args.push(n);
+  return args;
 }
 
 // ================= Escritura =================
@@ -554,6 +587,24 @@ async function initRepo(dir, { branch = "main" } = {}) {
   return head.ok ? plain : head;
 }
 
+// Clona un repositorio desde una URL, con validación previa de URL y rama.
+// Usa un timeout de 10 minutos (CLONE_TIMEOUT_MS) y no los 60 s del resto de operaciones de red:
+// un repositorio grande tarda más que eso, y un clone cortado a medias es peor que uno lento.
+// Devuelve {ok, output} con el mensaje literal de git, como el resto de las escrituras.
+async function clone(parent, { url, name = "", branch = "" } = {}) {
+  const badUrl = remoteUrlError(url);
+  if (badUrl) return { ok: false, output: badUrl };
+
+  const b = String(branch || "").trim();
+  if (b) {
+    const badBranch = branchNameError(b);
+    if (badBranch) return { ok: false, output: badBranch };
+  }
+
+  const res = await execGit(parent, cloneArgs({ url, name, branch: b }), CLONE_TIMEOUT_MS);
+  return { ok: res.ok, output: res.output };
+}
+
 async function listRemotes(dir) {
   const root = findRepoRoot(dir);
   if (!root) return [];
@@ -641,10 +692,12 @@ module.exports = {
   remoteUrlError,
   remoteNameError,
   repoNameError,
+  cloneNameFromUrl,
   parseRemotes,
   isLockError,
   commitArgs,
   checkoutArgs,
+  cloneArgs,
   // lectura
   readRepo,
   listBranches,
@@ -659,6 +712,7 @@ module.exports = {
   pull,
   sync,
   initRepo,
+  clone,
   listRemotes,
   setRemote,
   ghStatus,
