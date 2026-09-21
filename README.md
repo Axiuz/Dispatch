@@ -245,6 +245,19 @@ desde el panel o cuando un plan trae `project`. La rama se lee directamente de
 `.git/HEAD` (también en worktrees), sin lanzar procesos de git. Si la carpeta ya
 no existe se marca como "Suprimido".
 
+### Clonar un repositorio
+
+Para clonar un repositorio hay dos entradas: "+ clonar" en la cabecera PROYECTOS
+del carril izquierdo y "+ Clonar" en la barra del Editor. Se pide la URL y la
+carpeta de destino, con un nombre sugerido a partir de la propia URL. Esa carpeta
+tiene que estar dentro de tu carpeta personal, igual que al crear un proyecto
+nuevo, y la URL pasa por la misma validación que los remotos: nada de `file://`,
+de la forma `transporte::dirección` ni de URLs que empiecen por guion. El clone
+tiene un tope de 10 minutos y, si falla, se borra la carpeta a medias. Al
+terminar, la carpeta queda dada de alta en Proyectos: desde el carril se abre
+además la sesión de Claude Code dentro, y desde el Editor se carga como raíz del
+árbol.
+
 ### Qué se guarda y qué no
 
 | Dato | Dónde |
@@ -334,6 +347,7 @@ POST   /api/git/stage              {path, files?, all?}
 POST   /api/git/unstage            {path, files?, all?}
 POST   /api/git/commit             {path, message, amend?, all?, then?: push|sync}
 POST   /api/git/remote             {path, action: push|pull|sync}
+POST   /api/git/clone              {parent, url, name?, branch?} — clona dentro de una carpeta tuya
 GET    /api/git/plan?path=         plan de commits del repositorio
 POST   /api/git/plan               {path, text} o {path, commits: []}
 DELETE /api/git/plan               {path, index?} — un commit o el plan entero
@@ -449,6 +463,19 @@ quitan archivos del stage, se commitea (normal, `--amend`, con push o con sync) 
 se hace pull o push suelto. Un clic en un archivo de la lista lo abre en el
 Editor. Lo que no está —diffs, conflictos, rebase, tags y stash— se sigue haciendo
 en la terminal.
+
+La rama tiene fila propia, con su punto de color y las flechas de commits sin
+subir y sin traer. El color es estable: main y master van en el oro de la marca y
+las demás se reparten por el hash de su nombre, así que la misma rama se ve
+siempre igual. Debajo, los chips de las ramas recientes de ese repositorio; el
+primero es la anterior y lleva el símbolo de volver, para ir y regresar de un
+clic, y el menú de ramas también abre con las recientes arriba. Las cabeceras de
+"Cambios", "Cambios preparados" y "Commits" llevan escrito el nombre de la rama, y
+la caja del mensaje dice para qué rama se commitea: se ve dónde cae lo que estás
+haciendo. En la lista de commits, una línea de puntos con el nombre del upstream
+separa los que solo están en tu máquina —arriba, con el punto del color de la
+rama— de los que ya están en el remoto, en gris. Con HEAD suelto no hay rama a la
+que atribuir nada: la tarjeta se queda gris y sin chips.
 
 ### Plan de commits
 
