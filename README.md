@@ -477,6 +477,15 @@ separa los que solo están en tu máquina —arriba, con el punto del color de l
 rama— de los que ya están en el remoto, en gris. Con HEAD suelto no hay rama a la
 que atribuir nada: la tarjeta se queda gris y sin chips.
 
+Si un comando de git falla, el panel ya no abre un diálogo con su salida entera:
+enseña una franja roja dentro de la tarjeta con una sola línea —la que empieza
+por `fatal:` o `error:` y, si no hay ninguna, la última no vacía, que es donde
+git deja el resumen— y un "ver detalle" que despliega lo que escribió git, para
+leerlo o copiarlo. Esa línea la elige el servidor, y vale igual en español que en
+inglés. La franja se borra sola en cuanto empieza otra operación, y también con
+su aspa. Un commit del plan cuyos archivos ya no tienen cambios no llega a git:
+el panel lo avisa y ofrece quitarlo del plan.
+
 ### Plan de commits
 
 Al cerrar una tarea, Claude Code le pide al agente **documenter** que agrupe en
