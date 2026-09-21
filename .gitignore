@@ -15,3 +15,7 @@ orquestador-agentes/data/commitplans.json
 
 # Notas y to-dos por proyecto: trabajo del usuario y rutas reales
 orquestador-agentes/data/notes.json
+
+# Extensiones instaladas desde Open VSX y cuál está activa: son del usuario
+orquestador-agentes/data/extensions/
+orquestador-agentes/data/extensions.json
