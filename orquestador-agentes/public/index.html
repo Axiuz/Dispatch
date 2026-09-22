@@ -183,22 +183,25 @@
 
       <div class="prev-bar" id="prevBar">
         <select id="prevProject" class="map-select"></select>
-        <div class="segmented prev-modes" id="prevMode">
+        <div class="segmented prev-modes prev-web-only" id="prevMode">
           <button data-mode="server" class="active">Servidor propio</button>
           <button data-mode="url">URL externa</button>
+          <button data-mode="dev">Script</button>
         </div>
-        <input id="prevUrl" class="prev-url mono" type="text" spellcheck="false"
+        <input id="prevUrl" class="prev-url mono prev-web-only" type="text" spellcheck="false"
                placeholder="http://localhost:5173" />
-        <button class="btn" id="prevReloadBtn" title="Recargar la vista">⟳</button>
-        <div class="segmented prev-widths" id="prevWidth">
+        <button class="btn prev-web-only" id="prevReloadBtn" title="Recargar la vista">⟳</button>
+        <div class="segmented prev-widths prev-web-only" id="prevWidth">
           <button data-width="phone" title="390 px">Móvil</button>
           <button data-width="tablet" title="820 px">Tablet</button>
           <button data-width="full" class="active" title="Todo el ancho">Ancho</button>
         </div>
-        <button class="btn" id="prevStopBtn" title="Parar el servidor de este proyecto" hidden>Parar</button>
-        <button class="btn" id="prevBrowserBtn" title="Abrirlo en el navegador">Navegador</button>
-        <button class="btn" id="prevDeviceBtn" title="Abrirlo dentro del emulador">Emulador</button>
+        <button class="btn prev-web-only" id="prevStopBtn" title="Parar el servidor de este proyecto" hidden>Parar</button>
+        <button class="btn prev-web-only" id="prevBrowserBtn" title="Abrirlo en el navegador">Navegador</button>
+        <button class="btn prev-web-only" id="prevDeviceBtn" title="Abrirlo dentro del emulador">Emulador</button>
       </div>
+
+      <div class="prev-dev prev-web-only" id="prevDev" hidden></div>
 
       <div class="prev-body">
         <div class="prev-stage" id="prevStage">
@@ -208,7 +211,10 @@
             <span class="plan-empty-text">Elige un proyecto arriba y el panel lo sirve en un puerto local, o escribe la URL del servidor que ya tengas levantado.</span>
           </div>
         </div>
-        <div class="prev-android" id="prevAndroid" hidden></div>
+        <div class="prev-android" id="prevAndroid" hidden>
+          <div class="prev-build" id="prevBuild"></div>
+          <div id="prevDevices"></div>
+        </div>
       </div>
     </section>
 
