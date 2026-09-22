@@ -38,6 +38,41 @@ function sdkRoot(env = process.env, configured = "") {
 }
 
 const adbPath = (root) => path.join(root, "platform-tools", "adb");
+
+// aapt2 vive dentro de build-tools, una carpeta por versión: se coge la más
+// nueva por orden natural del nombre, que es como las numera el SDK.
+function aapt2Path(root) {
+  if (!root) return null;
+  const dir = path.join(root, "build-tools");
+  let versions = [];
+  try {
+    versions = fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
+  } catch (_) {
+    return null;
+  }
+  for (const version of versions) {
+    const candidate = path.join(dir, version, "aapt2");
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function parsePackageName(stdout) {
+  const hit = /(?:package(?:Name)?|name)=['"]?([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)/.exec(String(stdout || ""));
+  if (hit) return hit[1];
+  const line = String(stdout || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(l));
+  return line || null;
+}
+
 const emulatorPath = (root) => path.join(root, "emulator", "emulator");
 
 function scrcpyPath(env = process.env) {
@@ -210,6 +245,25 @@ function create({ config = {}, env = process.env } = {}) {
     return adb(["-s", serial, "install", "-r", apk], BOOT_TIMEOUT_MS * 6);
   }
 
+  // El nombre del paquete sale del propio APK con aapt2. Sin build-tools no hay
+  // aapt2: entonces no se lanza la app, pero instalarla sigue funcionando.
+  async function packageName(apk) {
+    const aapt2 = aapt2Path(root);
+    if (!aapt2) return null;
+    if (!apk || !path.isAbsolute(apk)) return null;
+    const res = await run(aapt2, ["dump", "packagename", apk], ADB_TIMEOUT_MS);
+    return res.ok ? parsePackageName(res.stdout) : null;
+  }
+
+  async function launch({ serial, pkg } = {}) {
+    if (!root) return noSdk();
+    const bad = serialError(serial);
+    if (bad) return { ok: false, output: bad };
+    const name = String(pkg || "").trim();
+    if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(name)) return { ok: false, output: "Ese paquete no es válido" };
+    return adb(["-s", serial, "shell", "monkey", "-p", name, "-c", "android.intent.category.LAUNCHER", "1"]);
+  }
+
   async function openUrl({ serial, url } = {}) {
     if (!root) return noSdk();
     const bad = serialError(serial);
@@ -243,7 +297,7 @@ function create({ config = {}, env = process.env } = {}) {
     }
   }
 
-  return { root, scrcpy, state, listAvds, listDevices, start, stop, install, openUrl, reverse, mirror };
+  return { root, scrcpy, state, listAvds, listDevices, start, stop, install, packageName, launch, openUrl, reverse, mirror };
 }
 
 module.exports = {
@@ -251,6 +305,8 @@ module.exports = {
   sdkRoot,
   sdkCandidates,
   scrcpyPath,
+  aapt2Path,
+  parsePackageName,
   parseAvds,
   parseDevices,
   serialError,
