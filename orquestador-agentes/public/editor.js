@@ -1598,6 +1598,153 @@ const CodeEditor = (() => {
 
   // ---- Barra de estado ----
   let flashText = "";
+  let flashBad = false;
+  let gradleInfo = null;
+  let gradleFor = null;
+  let buildRunning = false;
+
+  // El atajo de la barra: compila la carpeta abierta y la instala en el único
+  // dispositivo listo. El log entero se ve en la pestaña Preview; aquí solo se
+  // enseña en qué va, porque la barra es una línea.
+  async function loadGradle() {
+    if (gradleFor === root) return;
+    gradleFor = root;
+    gradleInfo = null;
+    if (!root) return renderStatus();
+    const asked = root;
+    try {
+      const res = await fetch(`/api/android/gradle?path=${encodeURIComponent(asked)}`);
+      const data = await res.json();
+      if (gradleFor !== asked) return;
+      gradleInfo = res.ok && data && data.root ? data : null;
+      buildRunning = Boolean(data && data.build && data.build.running);
+    } catch (_) {
+      gradleInfo = null;
+    }
+    renderStatus();
+  }
+
+  async function buildHere() {
+    if (!gradleInfo || buildRunning) return;
+    let devices = [];
+    try {
+      const state = await (await fetch("/api/android")).json();
+      devices = (state.devices || []).filter((d) => d.state === "device");
+    } catch (_) {}
+    const serial = devices.length === 1 ? devices[0].serial : null;
+    try {
+      const res = await fetch("/api/android/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: root, variant: "debug", install: Boolean(serial), serial: serial || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) return flash(data.error || `HTTP ${res.status}`);
+      buildRunning = true;
+      renderStatus();
+      flash(serial ? "Compilando e instalando…" : devices.length > 1 ? "Varios dispositivos: instala en Preview" : "Compilando…");
+    } catch (err) {
+      flash(err.message);
+    }
+  }
+
+  window.addEventListener("android:build", (e) => {
+    const ev = e.detail || {};
+    if (ev.phase === "start") buildRunning = true;
+    if (ev.phase === "done") {
+      buildRunning = false;
+      flash(ev.summary || (ev.ok ? "Compilado" : "Falló la compilación"));
+    }
+    if (ev.phase === "start" || ev.phase === "done") renderStatus();
+  });
+
+  // El diagnóstico es del orquestador, no de la carpeta abierta: a diferencia de
+  // "compilar", que necesita gradlew, este botón está siempre.
+  let diag = { running: false, done: 0, total: 0, failed: 0, ok: null };
+
+  // Carga el diagnóstico previo: si está en curso, lo adopta; si hay un informe, lo muestra.
+  // El diagnóstico pudo lanzarse desde Conexión, y la barra se dibuja después; al adoptar
+  // uno en curso el total queda en 0 porque /api/debug no dice qué pasos lleva ese run.
+  async function loadDiag() {
+    try {
+      const res = await fetch("/api/debug");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.running) diag = { running: true, done: 0, total: 0, failed: 0, ok: null };
+      else if (data.last && data.last.summary) {
+        const sum = data.last.summary;
+        diag = { running: false, done: 0, total: sum.total, failed: sum.failed, ok: sum.ok };
+      }
+    } catch (_) {}
+    renderStatus();
+  }
+
+  // Lanza el diagnóstico completo con body vacío para ejecutar solo los pasos no opcionales:
+  // así quedan fuera recompilar la app y reiniciar el servidor, que desde aquí serían una trampa.
+  // El total lo fija debug:start, porque el SSE puede llegar antes que la respuesta del POST.
+  async function runDiag() {
+    if (diag.running) return;
+    diag = { running: true, done: 0, total: 0, failed: 0, ok: null };
+    renderStatus();
+    try {
+      const res = await fetch("/api/debug/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const data = await res.json();
+      if (!res.ok) {
+        diag.running = false;
+        renderStatus();
+        return flash(data.error || `HTTP ${res.status}`, true);
+      }
+      if (!diag.total) diag.total = (data.steps || []).length;
+      renderStatus();
+    } catch (err) {
+      diag.running = false;
+      renderStatus();
+      flash(err.message, true);
+    }
+  }
+
+  function diagLabel() {
+    if (diag.running) return diag.total ? `diagnóstico ${diag.done}/${diag.total}` : "diagnóstico…";
+    if (diag.ok === true) return "diagnóstico ✓";
+    if (diag.ok === false) return `diagnóstico ⊗ ${diag.failed}`;
+    return "diagnóstico";
+  }
+
+  const diagClass = () => (diag.running || diag.ok === null ? "" : diag.ok ? " diag-ok" : " diag-bad");
+
+  // Genera el mensaje de flash del diagnóstico: muestra errores o éxito con detalles.
+  // El informe entero se queda en Conexión; aquí solo cabe si salió bien y qué falló.
+  function diagFlash(report) {
+    if (report.error) return `Diagnóstico: ${report.error}`;
+    const sum = report.summary || { total: 0, failed: 0, ok: false };
+    if (sum.ok) return `Diagnóstico bien: ${sum.total} comprobaciones`;
+    const malas = (report.results || []).filter((r) => r.status === "fail").map((r) => r.label || r.id);
+    return malas.length ? `Diagnóstico: falla ${malas.join(", ")}` : `Diagnóstico: ${sum.failed} de ${sum.total} falla`;
+  }
+
+  window.addEventListener("debug:start", (e) => {
+    const steps = (e.detail && e.detail.steps) || [];
+    diag = { running: true, done: 0, total: steps.length, failed: 0, ok: null };
+    renderStatus();
+  });
+
+  // Solo procesa eventos de paso que no sean 'running' ni 'log', para evitar ruido:
+  // cada comprobación emite varios eventos y solo el terminal cuenta como avance.
+  window.addEventListener("debug:step", (e) => {
+    const ev = e.detail || {};
+    if (!diag.running || ev.status === "running" || ev.status === "log") return;
+    diag.done++;
+    if (ev.status === "fail") diag.failed++;
+    renderStatus();
+  });
+
+  window.addEventListener("debug:done", (e) => {
+    const report = e.detail || {};
+    const sum = report.summary;
+    diag = { running: false, done: 0, total: sum ? sum.total : 0, failed: sum ? sum.failed : 0, ok: sum ? sum.ok : false };
+    renderStatus();
+    flash(diagFlash(report), !(sum && sum.ok));
+  });
 
   function renderStatus() {
     const entry = activePath ? files.get(activePath) : null;
@@ -1621,8 +1768,15 @@ const CodeEditor = (() => {
         ? `<button class="ed-status-item act" data-lint${linting ? " disabled" : ""}>${linting ? "revisando…" : "revisar"}</button>`
         : "") +
       (fmt ? `<button class="ed-status-item act" data-format title="Formatear con ${escapeAttr(fmt.name)}">formatear</button>` : "") +
+      (gradleInfo
+        ? `<button class="ed-status-item act" data-build${buildRunning ? " disabled" : ""} title="./gradlew assembleDebug e instalar en el emulador">${
+            buildRunning ? "compilando…" : "compilar"
+          }</button>`
+        : "") +
+      `<button class="ed-status-item act${diagClass()}" data-diag${diag.running ? " disabled" : ""} ` +
+      `title="Comprobaciones del orquestador; el informe entero está en Conexión">${escapeHtml(diagLabel())}</button>` +
       `<span class="push"></span>` +
-      `<span class="ed-status-flash">${escapeHtml(flashText)}</span>` +
+      `<span class="ed-status-flash${flashBad ? " bad" : ""}">${escapeHtml(flashText)}</span>` +
       (entry && !entry.saved ? '<span class="ed-status-item dirty">sin guardar</span>' : "") +
       `<button class="ed-status-item act" data-save title="Guardar el archivo">Guardar ⌘S</button>` +
       `<span class="ed-status-item ed-status-cursor">Ln ${cursor.line}, Col ${cursor.column}</span>` +
@@ -1634,6 +1788,8 @@ const CodeEditor = (() => {
     host.querySelector("[data-problems]").addEventListener("click", () => setProblemsOpen(!problemsOpen));
     host.querySelector("[data-lint]")?.addEventListener("click", () => runLinters());
     host.querySelector("[data-format]")?.addEventListener("click", () => formatActive());
+    host.querySelector("[data-build]")?.addEventListener("click", () => buildHere());
+    host.querySelector("[data-diag]")?.addEventListener("click", () => runDiag());
   }
 
   // El menú rápido de la barra: las ramas recientes y la vista entera. Usa el
@@ -1653,14 +1809,18 @@ const CodeEditor = (() => {
     openGitMenu(anchor, items);
   }
 
-  function flash(text) {
+  // Muestra un mensaje temporal en la barra de estado: dura 2.2s si es éxito, 6s si es error,
+  // porque un fallo hay que poder leerlo antes de que desaparezca. El color cambia con flashBad.
+  function flash(text, bad = false) {
     flashText = text;
+    flashBad = bad;
     renderStatus();
     clearTimeout(flash.timer);
     flash.timer = setTimeout(() => {
       flashText = "";
+      flashBad = false;
       renderStatus();
-    }, 2200);
+    }, bad ? 6000 : 2200);
   }
 
   // ---- Herramientas locales y panel de Problemas ----
@@ -1963,6 +2123,7 @@ const CodeEditor = (() => {
     if (view === "search") runSearch();
     toolsFor = null;
     loadTools();
+    loadGradle();
   }
 
   // ---- Entrada desde el panel ----
@@ -1973,6 +2134,7 @@ const CodeEditor = (() => {
       renderView();
       setSide(sideOpen);
       renderStatus();
+      loadDiag();
     }
     if (!root) {
       const first = projects.find((p) => p.exists !== false);
