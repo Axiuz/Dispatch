@@ -367,6 +367,10 @@ POST   /api/android/stop          {serial}
 POST   /api/android/mirror        {serial} — abre scrcpy
 POST   /api/android/install       {serial, apk} — el apk, dentro de un proyecto
 POST   /api/android/url           {serial, url} — la abre en el dispositivo
+GET    /api/android/gradle?path=  {root, modules, java, wrapper, build}
+GET    /api/android/build         la compilación en curso y su log
+POST   /api/android/build         {path, module?, variant?, serial?, install?} — 202
+DELETE /api/android/build         cancela la compilación
 
 GET    /api/notes?path=            notas y to-dos de una carpeta
 POST   /api/notes                  {path, text} — añade una nota
@@ -583,6 +587,29 @@ El botón **Emulador** de la sección web abre la vista previa dentro del
 dispositivo. Antes hace `adb reverse` del puerto, porque el `localhost` del móvil
 es el suyo y no el del Mac: sin eso, el navegador del emulador no vería nada.
 
+### Compilar e instalar
+
+Encima de la lista de dispositivos hay un bloque COMPILACIÓN. Si la carpeta
+elegida tiene `gradlew`, el panel muestra dos botones: **compilar** y **compilar
+e instalar**. Corre `./gradlew assembleDebug` con el wrapper del proyecto. Si
+hay varios módulos, los lee de `settings.gradle` y deja elegir uno en un
+desplegable. El log de Gradle se ve en vivo durante la compilación y se puede
+cancelar a mitad.
+
+Al terminar bien, el panel busca el APK en `build/outputs/apk` y enseña su
+nombre. Con **compilar e instalar** lo manda al dispositivo elegido con `adb
+install -r` y abre la app en el emulador; el nombre del paquete lo saca del APK
+con `aapt2`, y si no está, la app queda instalada y la abres tú. Si falla, se
+enseña la línea de Gradle que indica el fallo ("What went wrong") y el log
+entero se queda ahí.
+
+El JDK sale de `JAVA_HOME` o del que trae Android Studio, y el SDK entra como
+`ANDROID_HOME`: el panel no hereda el entorno de tu shell. Solo se permite una
+compilación a la vez. En el Editor, cuando la carpeta abierta es un proyecto
+Gradle, la barra de estado trae un botón **compilar** que hace lo mismo y, si
+hay un único dispositivo listo, también lo instala. Las builds de release no
+están incluidas: requieren firma.
+
 ---
 
 ## Seguridad
@@ -613,6 +640,7 @@ orquestador-agentes/          raíz del repo
     notes.js                  notas y to-dos de cada proyecto: normalizador y topes
     preview.js                servidor estático con recarga en vivo, uno por carpeta
     android.js                emuladores: AVDs, dispositivos y operaciones de adb
+    gradle.js                 compila con ./gradlew y localiza el APK que sale
     claudeusage.js            tokens que gasta Claude Code, leídos de sus transcripts
     safepath.js               contención de rutas del editor
     public/                   panel: index.html, styles.css, app.js, graph.js,
@@ -662,6 +690,10 @@ orquestador-agentes/          raíz del repo
   hay reemplazo de módulos en caliente, así que el estado de la página se pierde.
   Y sirve los archivos tal cual: un proyecto que haya que compilar (React, Vue) se
   ve por su propio dev server, en el modo de URL externa.
+- Solo se compila debug: una build de release necesita firma, y eso no se pide
+  desde aquí. Tampoco hay `bundle` ni `.aab`.
+- Una compilación a la vez, y el log vive en memoria: reiniciar el servidor se
+  lleva el log de la última, aunque el APK siga en su carpeta.
 - La pantalla del emulador no se ve dentro del panel: se ve en su ventana o en
   scrcpy. Meterla dentro necesitaría el gRPC del emulador, que es otra
   dependencia.
