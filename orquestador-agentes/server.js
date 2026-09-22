@@ -16,7 +16,9 @@ const debugsuite = require("./debug");
 const inbox = require("./inbox");
 const search = require("./search");
 const preview = require("./preview");
+const devserver = require("./devserver");
 const androidlib = require("./android");
+const gradlelib = require("./gradle");
 const vsix = require("./vsix");
 const toolsuite = require("./tools");
 
@@ -423,6 +425,7 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => {
     sessions.forEach(killSession);
     preview.stopAll();
+    devserver.stopAll();
     usageTracker.stop();
     process.exit(0);
   });
@@ -737,7 +740,7 @@ if (process.env.ORQ_APP_ONLY) {
     res.status(403).type("text").send("El panel del orquestador solo está disponible en la app Singularity.");
   });
 }
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res) => res.set("Cache-Control", "no-store") }));
 // xterm.js se sirve tal cual desde node_modules: sin build step
 // Algunos paquetes (monaco) no exponen su package.json en el campo "exports",
 // así que si require.resolve falla se cae a la carpeta de node_modules de al lado.
@@ -2422,6 +2425,36 @@ app.delete("/api/preview", (req, res) => {
   res.json({ ok: true, servers: preview.list() });
 });
 
+const devEvent = (ev) => broadcast(ev.phase === "log" ? "dev:log" : "dev:update", ev);
+
+app.get("/api/dev", (req, res) => {
+  const dir = insideProject(req.query.path);
+  if (!dir || !isDirectory(dir)) return res.status(403).json(FORBIDDEN);
+  const found = devserver.info(dir);
+  if (!found) return res.json({ root: null, scripts: [], state: null, servers: devserver.list() });
+  res.json({ ...found, state: devserver.state(found.root), servers: devserver.list() });
+});
+
+app.post("/api/dev", (req, res) => {
+  const dir = insideProject(req.body && req.body.path);
+  if (!dir || !isDirectory(dir)) return res.status(403).json(FORBIDDEN);
+  const root = devserver.findPackageRoot(dir);
+  if (!root) return res.status(400).json({ error: "Esa carpeta no tiene package.json" });
+
+  const started = devserver.start({ root, script: req.body.script, onEvent: devEvent });
+  if (!started.ok) return res.status(409).json({ error: started.output });
+  res.status(202).json({ ok: true, root, state: started.state, servers: devserver.list() });
+});
+
+app.delete("/api/dev", (req, res) => {
+  const dir = insideProject(req.body && req.body.path);
+  if (!dir) return res.status(403).json(FORBIDDEN);
+  const root = devserver.findPackageRoot(dir);
+  if (!root || !devserver.stop(root)) return res.status(404).json({ error: "Ahí no hay ningún script en marcha" });
+  broadcast("dev:update", { phase: "stopping", path: root });
+  res.json({ ok: true, servers: devserver.list() });
+});
+
 // Abrir en el navegador de verdad. Es un execFile de "open", así que la URL tiene
 // que ser de esta máquina: `localUrlError()` rechaza cualquier otra cosa.
 app.post("/api/preview/open", (req, res) => {
@@ -2469,8 +2502,11 @@ app.post("/api/android/mirror", async (req, res) => {
   await androidWrite(res, android.mirror({ serial: req.body.serial }));
 });
 
+// El APK vive en app/build/outputs/apk, y "build" es una de las carpetas que el
+// editor esconde: aquí se admite (allowSkipped) porque lo que importa es que la
+// ruta caiga dentro de un proyecto, no que el árbol la enseñe.
 app.post("/api/android/install", async (req, res) => {
-  const apk = insideProject(req.body.apk);
+  const apk = insideProject(req.body.apk, { allowSkipped: true });
   if (!apk || !fs.existsSync(apk)) return res.status(403).json(FORBIDDEN);
   await androidWrite(res, await android.install({ serial: req.body.serial, apk }));
 });
@@ -2494,6 +2530,101 @@ app.post("/api/android/url", async (req, res) => {
     // una URL ilegible la rechaza openUrl con su mensaje
   }
   await androidWrite(res, await android.openUrl({ serial: req.body.serial, url: target }));
+});
+
+// ---- Compilar con Gradle ----
+// Un build a la vez, con el log en vivo por SSE: una compilación de Android son
+// minutos, así que el POST contesta 202 y lo demás sale por `android:build`.
+// gradle.js informa de la compilación (`built`); el `done` final lo manda este
+// archivo, cuando ya instaló y abrió la app, que es lo que pidió el panel.
+// El SDK sale de android.js y entra en el entorno de Gradle como ANDROID_HOME:
+// el orquestador no lo hereda del shell, y sin él AGP falla pidiendo un
+// local.properties que el proyecto no tiene por qué llevar.
+let gradle = gradlelib.create({ onEvent: (ev) => broadcast("android:build", ev), sdk: () => android.root });
+
+app.get("/api/android/gradle", (req, res) => {
+  const dir = insideProject(req.query.path);
+  if (!dir) return res.status(403).json(FORBIDDEN);
+  const info = gradle.detect(dir);
+  res.json({ ...(info || { root: null, modules: [], java: gradlelib.javaHome(), wrapper: false }), build: gradle.state() });
+});
+
+app.get("/api/android/build", (req, res) => {
+  res.json({ build: gradle.state() });
+});
+
+app.post("/api/android/build", (req, res) => {
+  const body = req.body || {};
+  const dir = insideProject(body.path);
+  if (!dir) return res.status(403).json(FORBIDDEN);
+  if (gradle.running()) return res.status(409).json({ error: "Ya hay una compilación en curso" });
+
+  const root = gradlelib.findGradleRoot(dir);
+  if (!root) return res.status(400).json({ error: "Esa carpeta no tiene gradlew" });
+
+  const task = gradlelib.taskFor({ module: body.module, variant: body.variant, task: body.task });
+  const badTask = gradlelib.taskError(task);
+  if (badTask) return res.status(400).json({ error: badTask });
+
+  const install = Boolean(body.install);
+  const serial = String(body.serial || "").trim();
+  if (install) {
+    const badSerial = androidlib.serialError(serial);
+    if (badSerial) return res.status(400).json({ error: badSerial });
+  }
+
+  const id = crypto.randomUUID();
+  const started = gradle.start({ id, root, task });
+  if (!started.ok) return res.status(400).json({ error: started.output });
+  res.status(202).json({ ok: true, id, task, root, install, serial: install ? serial : null });
+
+  started.promise
+    .then((result) => finishBuild({ id, result, install, serial, launch: body.launch !== false }))
+    .catch((err) => broadcast("android:build", { id, phase: "done", ok: false, summary: String(err.message || err) }));
+});
+
+// El APK que sale de la compilación vuelve a pasar por Proyectos antes de
+// instalarlo: lo devuelve un recorrido del disco, no el panel, pero la puerta es
+// la misma para todo lo que toca el sistema.
+async function finishBuild({ id, result, install, serial, launch }) {
+  let ok = result.ok;
+  let summary = result.summary;
+  let pkg = null;
+
+  if (ok && install) {
+    const apk = insideProject(result.apk, { allowSkipped: true });
+    if (!apk) {
+      ok = false;
+      summary = "Compiló, pero no encuentro el APK generado";
+    } else {
+      gradle.note(`Instalando ${path.basename(apk)} en ${serial}…`);
+      const installed = await android.install({ serial, apk });
+      gradle.note(installed.output || (installed.ok ? "Instalado" : "No se pudo instalar"));
+      if (!installed.ok) {
+        ok = false;
+        summary = gradlelib.errorSummary(installed.output) || "No se pudo instalar";
+      } else {
+        pkg = await android.packageName(apk);
+        if (pkg && launch) {
+          const opened = await android.launch({ serial, pkg });
+          gradle.note(opened.ok ? `Abriendo ${pkg}…` : opened.output);
+        } else if (!pkg) {
+          gradle.note("Sin aapt2 en el SDK: queda instalada, pero ábrela tú desde el emulador.");
+        }
+        summary = pkg ? `Instalado · ${pkg}` : "Instalado";
+      }
+      try {
+        broadcast("android:update", await android.state({ refresh: true }));
+      } catch (_) {}
+    }
+  }
+
+  gradle.setResult({ ok, summary, phase: "done" });
+  broadcast("android:build", { id, phase: "done", ok, apk: result.apk, summary, problems: result.problems, pkg });
+}
+
+app.delete("/api/android/build", (req, res) => {
+  res.json(gradle.cancel());
 });
 
 // ---- Hooks de Claude Code ----
