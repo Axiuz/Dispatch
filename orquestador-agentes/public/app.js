@@ -391,6 +391,18 @@ function connectStream() {
     window.dispatchEvent(new CustomEvent("preview:servers", { detail: JSON.parse(e.data) }));
   });
 
+  es.addEventListener("dev:update", (e) => {
+    window.dispatchEvent(new CustomEvent("dev:update", { detail: JSON.parse(e.data) }));
+  });
+
+  es.addEventListener("dev:log", (e) => {
+    window.dispatchEvent(new CustomEvent("dev:log", { detail: JSON.parse(e.data) }));
+  });
+
+  es.addEventListener("android:build", (e) => {
+    window.dispatchEvent(new CustomEvent("android:build", { detail: JSON.parse(e.data) }));
+  });
+
   es.addEventListener("terminals:updated", (e) => {
     sessions = JSON.parse(e.data);
     // Si una de las dos terminales visibles desapareció, pasar a otra del mismo
@@ -405,8 +417,11 @@ function connectStream() {
     renderProjects();
   });
 
+  // La pestaña Conexión pinta el informe entero; el editor solo el avance en su
+  // barra, así que los tres eventos se reemiten para su módulo
   es.addEventListener("debug:start", (e) => {
     const { runId, steps } = JSON.parse(e.data);
+    window.dispatchEvent(new CustomEvent("debug:start", { detail: { runId, steps } }));
     debugReport = {
       runId,
       running: true,
@@ -419,12 +434,15 @@ function connectStream() {
   });
 
   es.addEventListener("debug:step", (e) => {
-    upsertDebugStep(JSON.parse(e.data));
+    const ev = JSON.parse(e.data);
+    window.dispatchEvent(new CustomEvent("debug:step", { detail: ev }));
+    upsertDebugStep(ev);
     saveDebugReport();
   });
 
   es.addEventListener("debug:done", (e) => {
     const report = JSON.parse(e.data);
+    window.dispatchEvent(new CustomEvent("debug:done", { detail: report }));
     debugReport = { ...report, running: false };
     saveDebugReport();
     renderDebug();
