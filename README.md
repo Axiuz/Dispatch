@@ -361,6 +361,10 @@ POST   /api/preview               {path} — sirve esa carpeta en un puerto libr
 DELETE /api/preview               {path} — para ese servidor
 POST   /api/preview/open          {url} — abre la URL en el navegador de verdad
 
+GET    /api/dev?path=             package.json de esa carpeta, sus scripts y el estado
+POST   /api/dev                   {path, script} — lanza ese script del package.json
+DELETE /api/dev                   {path} — para el script y todos sus hijos
+
 GET    /api/android               {sdk, avds, devices, scrcpy}
 POST   /api/android/start         {avd, coldBoot?}
 POST   /api/android/stop          {serial}
@@ -575,6 +579,25 @@ iframe ahí y el panel no sirve nada. La barra trae tres anchos —móvil (390 p
 tablet (820 px) y ancho completo—, recargar, abrirlo en el navegador de verdad y
 pararlo. Hay un tope de tres servidores a la vez.
 
+### El dev server del proyecto
+
+La barra de la pestaña Preview tiene un tercer modo: **Script**. Además del servidor
+propio y la URL externa, puedes arrancar desde el panel el script de desarrollo del
+propio proyecto.
+
+El panel busca el `package.json` de la carpeta abierta subiendo hasta encontrarlo, y
+detecta el gestor por el campo `packageManager` o, si no está, por el lockfile. Luego
+ofrece sus scripts en un desplegable: el que sale elegido es `dev`, o `start`, o el
+primero que haya. Al arrancar, el log se ve en vivo debajo de la fila; cuando el
+script imprime su URL local —`http://localhost:5173` y parecidas— el panel la detecta
+solo y apunta el iframe ahí.
+
+El proceso se lanza con el color apagado y sin abrir el navegador, y al pararlo se
+mata el grupo entero, para que no quede el hijo ocupando el puerto. Hay un tope de
+tres scripts a la vez, uno por carpeta, y todos mueren al cerrar la app. Es la
+alternativa a la URL externa cuando el proyecto hay que compilarlo (Vite, Next): ya
+no hace falta arrancarlo a mano en la terminal.
+
 ### Android
 
 La otra sección lista los AVDs de tu SDK, los arranca —normal o en frío— y los
@@ -639,6 +662,7 @@ orquestador-agentes/          raíz del repo
     commitplan.js             parser del plan de commits del documenter
     notes.js                  notas y to-dos de cada proyecto: normalizador y topes
     preview.js                servidor estático con recarga en vivo, uno por carpeta
+    devserver.js              arranca el script del package.json y saca su URL del log
     android.js                emuladores: AVDs, dispositivos y operaciones de adb
     gradle.js                 compila con ./gradlew y localiza el APK que sale
     claudeusage.js            tokens que gasta Claude Code, leídos de sus transcripts
